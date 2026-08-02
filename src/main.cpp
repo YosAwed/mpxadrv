@@ -39,7 +39,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "0.4.0";
+constexpr const char* kVersion = "0.5.0";
 constexpr int kDefaultRate = 48'000;
 constexpr int kDefaultLoops = 1;
 constexpr std::uint32_t kFramesPerBuffer = 2'048;

@@ -153,8 +153,10 @@ tempo and gate timing, program/pan/control changes, channel switching,
 bend-range setup,
 velocity control, RPN/NRPN, `E0` direct MIDI byte streams (including SysEx), and
 `E1` polyphonic note stacking. Repeat commands and the requested `--loops`
-count are followed during conversion. `E2` model-specific Roland/CM-64/SC/
-U-110 macros are variable-length device commands and are not converted yet;
-the converter warns and stops that track instead of guessing a boundary or
-sending malformed SysEx. MADRV pitch-LFO/portamento behavior is also not yet
-expanded into dense MIDI pitch-bend events.
+count are followed during conversion. `E2` initialization for MT-32, CM-64,
+and GS devices is converted to Roland DT1 SysEx with the original checksum
+algorithm. Other model-specific Roland/CM-64/SC/U-110 macros remain
+variable-length device commands; the converter reports the unsupported
+subcommand and stops that track instead of guessing a boundary or sending
+malformed SysEx. MADRV pitch-LFO/portamento behavior is also not yet expanded
+into dense MIDI pitch-bend events.

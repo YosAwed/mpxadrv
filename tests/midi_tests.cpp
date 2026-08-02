@@ -1,5 +1,6 @@
 #include "midi.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -84,12 +85,59 @@ int main() {
             "SMF conductor track is missing");
 
     const std::vector<std::uint8_t> unsupported = {
-        0xe0, 0x08, 0x80, 0xe2, 0x00,
+        0xe0, 0x08, 0x80, 0xe2, 0x01,
     };
     const mpxadrv::MidiSequence safe = mpxadrv::convertMadrvMidi(
         unsupported.data(), unsupported.size(), offsets, 1, 1);
     require(!safe.warnings.empty(), "E2 safety warning is missing");
     require(safe.tracks.empty(), "unsupported E2 emitted unexpected MIDI");
+
+    const std::vector<std::uint8_t> resets = {
+        0xe0, 0x08, 0x80,  // Switch to MIDI channel 1.
+        0xe2, 0x00,        // MT-32 reset.
+        0xe2, 0x14,        // CM-64 reset.
+        0xe2, 0x1c,        // GS reset.
+        0xf1, 0x00, 0x00,
+    };
+    const mpxadrv::MidiSequence resetSequence = mpxadrv::convertMadrvMidi(
+        resets.data(), resets.size(), offsets, 1, 1);
+    require(resetSequence.warnings.empty(),
+            "supported E2 reset produced a warning");
+    require(resetSequence.tracks.size() == 1,
+            "E2 reset track was not emitted");
+    const auto& resetEvents = resetSequence.tracks[0].events;
+    require(resetEvents.size() == 3, "E2 reset event count is wrong");
+    const std::vector<std::uint8_t> mt32Reset = {
+        0xf0, 0x41, 0x10, 0x16, 0x12, 0x7f,
+        0x00, 0x00, 0x00, 0x01, 0xf7,
+    };
+    const std::vector<std::uint8_t> gsReset = {
+        0xf0, 0x41, 0x10, 0x42, 0x12, 0x40,
+        0x00, 0x7f, 0x00, 0x41, 0xf7,
+    };
+    require(resetEvents[0].bytes == mt32Reset,
+            "MT-32 reset SysEx is wrong");
+    require(resetEvents[1].bytes == mt32Reset,
+            "CM-64 reset SysEx is wrong");
+    require(resetEvents[2].bytes == gsReset, "GS reset SysEx is wrong");
+
+    const std::filesystem::path resetOutput =
+        std::filesystem::temp_directory_path() /
+        ("mpxadrv-reset-test-" + std::to_string(getpid()) + ".mid");
+    mpxadrv::writeStandardMidi(resetSequence, resetOutput, "Reset test");
+    std::ifstream resetInput(resetOutput, std::ios::binary);
+    const std::vector<std::uint8_t> resetFile(
+        (std::istreambuf_iterator<char>(resetInput)),
+        std::istreambuf_iterator<char>());
+    std::filesystem::remove(resetOutput, error);
+    const std::vector<std::uint8_t> encodedMt32Reset = {
+        0xf0, 0x0a, 0x41, 0x10, 0x16, 0x12,
+        0x7f, 0x00, 0x00, 0x00, 0x01, 0xf7,
+    };
+    require(std::search(resetFile.begin(), resetFile.end(),
+                        encodedMt32Reset.begin(), encodedMt32Reset.end()) !=
+                resetFile.end(),
+            "SMF SysEx encoding is wrong");
 
     std::cout << "MIDI conversion tests passed\n";
     return 0;

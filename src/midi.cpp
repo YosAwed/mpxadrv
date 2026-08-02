@@ -87,7 +87,7 @@ struct TrackConverter {
   bool midi = false;
   bool emitted = false;
   bool stopped = false;
-  bool warnedE2 = false;
+  std::uint8_t rolandDevice = 0x10;
   std::vector<std::pair<int, int>> polyNotes;
 
   void warning(const std::string& message) {
@@ -214,6 +214,49 @@ struct TrackConverter {
     }
   }
 
+  void rolandDt1(std::uint32_t packedAddress, std::uint8_t data) {
+    const std::uint8_t model =
+        static_cast<std::uint8_t>((packedAddress >> 24) & 0xff);
+    const std::uint8_t address1 =
+        static_cast<std::uint8_t>((packedAddress >> 16) & 0x7f);
+    const std::uint8_t address2 =
+        static_cast<std::uint8_t>((packedAddress >> 8) & 0x7f);
+    const std::uint8_t address3 =
+        static_cast<std::uint8_t>(packedAddress & 0x7f);
+    const std::uint8_t checksum = static_cast<std::uint8_t>(
+        (-(address1 + address2 + address3 + data)) & 0x7f);
+    event({0xf0, 0x41, rolandDevice, model, 0x12, address1, address2,
+           address3, data, checksum, 0xf7},
+          tick);
+  }
+
+  void extendedE2() {
+    if (!midi) {
+      warning(
+          "E2 exclusive command appeared outside MIDI mode; track stopped safely");
+      stopped = true;
+      return;
+    }
+    position = checkedAdvance(position, 1, bytes.size());
+    const std::uint8_t subcommand = bytes[position - 1];
+    switch (subcommand) {
+      case 0x00:  // MT:INIT
+      case 0x14:  // CM64:INIT
+        rolandDevice = 0x10;
+        rolandDt1(0x167f0000, 0x00);
+        break;
+      case 0x1c:  // SC:INIT (GS reset)
+        rolandDevice = 0x10;
+        rolandDt1(0x4240007f, 0x00);
+        break;
+      default:
+        warning("unsupported E2 subcommand " + hexByte(subcommand) +
+                "; track stopped safely");
+        stopped = true;
+        break;
+    }
+  }
+
   void extendedE0() {
     position = checkedAdvance(position, 1, bytes.size());
     const std::uint8_t subcommand = bytes[position - 1];
@@ -306,6 +349,9 @@ struct TrackConverter {
         control(6, bytes[parameters + 2]);
         control(6, bytes[parameters + 3]);
         break;
+      case 0x19:
+        rolandDevice = bytes[parameters] & 0x7f;
+        break;
       default:
         break;
     }
@@ -355,11 +401,7 @@ struct TrackConverter {
           }
           break;
         case 0xe2:
-          if (!warnedE2) {
-            warning("E2 model-specific SysEx is not converted yet; track stopped safely");
-            warnedE2 = true;
-          }
-          stopped = true;
+          extendedE2();
           break;
         case 0xe3:
         case 0xe4:

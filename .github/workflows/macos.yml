@@ -1,0 +1,27 @@
+name: macOS CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: brew install cmake mdxmini
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
