@@ -1,4 +1,5 @@
 #include <AudioToolbox/AudioToolbox.h>
+#include <CoreAudio/HostTime.h>
 
 #include <algorithm>
 #include <atomic>
@@ -9,8 +10,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -40,7 +43,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "0.6.0";
+constexpr const char* kVersion = "0.6.1";
 constexpr int kDefaultRate = 48'000;
 constexpr int kDefaultLoops = 1;
 constexpr std::uint32_t kFramesPerBuffer = 2'048;
@@ -175,7 +178,7 @@ void printUsage(std::ostream& stream) {
       << "  -p, --pdx-dir <path>   Additional PDX search directory\n"
       << "      --tdx-file <path>  Override the song's PDX with a TDX definition\n"
       << "      --destination <id> CoreMIDI destination index or name\n"
-      << "      --soundfont <path>  SF2 or DLS bank for midi-synth\n"
+      << "      --soundfont <path>  SF2 or DLS bank for midi-synth/MDR play\n"
       << "  -r, --rate <hz>        Sample rate, 8000-192000 (default: 48000)\n"
       << "  -l, --loops <count>    Number of song loops, 1-100 (default: 1)\n"
       << "  -h, --help             Show this help\n"
@@ -279,8 +282,12 @@ Options parseArguments(int argc, char* argv[]) {
   if (options.command == "midi-play" && options.midiDestination.empty()) {
     throw CliError("midi-play requires --destination <index-or-name>");
   }
-  if (!options.soundFont.empty() && options.command != "midi-synth") {
-    throw CliError("--soundfont can only be used with midi-synth");
+  const bool mdrPlay =
+      options.command == "play" &&
+      asciiLower(options.input.extension().string()) == ".mdr";
+  if (!options.soundFont.empty() && options.command != "midi-synth" &&
+      !mdrPlay) {
+    throw CliError("--soundfont can only be used with midi-synth or MDR play");
   }
   return options;
 }
@@ -647,6 +654,13 @@ class AudioPlayer {
   }
 
   void play() {
+    playAt(std::chrono::steady_clock::time_point{}, {});
+  }
+
+  void prepare() {
+    if (prepared_) {
+      return;
+    }
     const std::uint32_t bytes =
         kFramesPerBuffer * song_.channels() * sizeof(std::int16_t);
     for (int i = 0; i < kQueueBufferCount && !reachedEnd_; ++i) {
@@ -655,12 +669,35 @@ class AudioPlayer {
                    "AudioQueueAllocateBuffer");
       fillAndEnqueue(buffer);
     }
-    requireAudio(AudioQueueStart(queue_, nullptr), "AudioQueueStart");
+    prepared_ = true;
+  }
 
-    while (!finished_.load() && !gInterrupted) {
+  void playAt(std::chrono::steady_clock::time_point start,
+              std::function<bool()> shouldStop) {
+    shouldStop_ = std::move(shouldStop);
+    prepare();
+    if (shouldStop()) {
+      return;
+    }
+    AudioTimeStamp startStamp{};
+    const AudioTimeStamp* requestedStart = nullptr;
+    if (start != std::chrono::steady_clock::time_point{}) {
+      const auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
+          start - std::chrono::steady_clock::now());
+      if (delay.count() > 0) {
+        startStamp.mFlags = kAudioTimeStampHostTimeValid;
+        startStamp.mHostTime =
+            AudioGetCurrentHostTime() +
+            AudioConvertNanosToHostTime(static_cast<UInt64>(delay.count()));
+        requestedStart = &startStamp;
+      }
+    }
+    requireAudio(AudioQueueStart(queue_, requestedStart), "AudioQueueStart");
+
+    while (!finished_.load() && !shouldStop()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    if (gInterrupted) {
+    if (shouldStop()) {
       AudioQueueStop(queue_, true);
     }
   }
@@ -670,11 +707,15 @@ class AudioPlayer {
                              AudioQueueBufferRef buffer) {
     auto* player = static_cast<AudioPlayer*>(userData);
     --player->buffersInFlight_;
-    if (!player->reachedEnd_ && !gInterrupted) {
+    if (!player->reachedEnd_ && !player->shouldStop()) {
       player->fillAndEnqueue(buffer);
     } else if (player->buffersInFlight_ == 0) {
       player->finished_.store(true);
     }
+  }
+
+  bool shouldStop() const {
+    return gInterrupted || (shouldStop_ && shouldStop_());
   }
 
   void fillAndEnqueue(AudioQueueBufferRef buffer) noexcept {
@@ -702,8 +743,10 @@ class AudioPlayer {
   AudioQueueRef queue_ = nullptr;
   std::uint64_t remainingFrames_ = 0;
   std::atomic<bool> finished_{false};
+  std::function<bool()> shouldStop_;
   int buffersInFlight_ = 0;
   bool reachedEnd_ = false;
+  bool prepared_ = false;
 };
 
 void printSongInfo(const Song& song, const Options& options) {
@@ -821,6 +864,67 @@ void printMidiWarnings(const mpxadrv::MidiSequence& sequence) {
   }
 }
 
+std::vector<std::uint8_t> makeMdxTempoConductor(
+    const mpxadrv::MidiSequence& sequence) {
+  std::vector<std::uint8_t> track;
+  std::uint64_t tick = 0;
+  auto appendRest = [&](std::uint64_t clocks) {
+    while (clocks > 0) {
+      const std::uint8_t chunk =
+          static_cast<std::uint8_t>(std::min<std::uint64_t>(clocks, 128));
+      track.push_back(static_cast<std::uint8_t>(chunk - 1));
+      clocks -= chunk;
+    }
+  };
+  for (const mpxadrv::MidiTempo& tempo : sequence.tempos) {
+    if (tempo.tick > sequence.endTick) {
+      break;
+    }
+    appendRest(tempo.tick - tick);
+    tick = tempo.tick;
+    track.push_back(0xff);
+    track.push_back(tempo.value);
+  }
+  appendRest(sequence.endTick - tick);
+  track.push_back(0xf1);
+  track.push_back(0x00);
+  return track;
+}
+
+bool canLoadMdrPdx(const mpxadrv::MdrFile& mdr, const fs::path& pdx) {
+  bool includePdx = mdr.pdxName.empty() || !pdx.empty();
+  if (includePdx && !pdx.empty() &&
+      asciiLower(pdx.extension().string()) == ".tdx") {
+    try {
+      static_cast<void>(mpxadrv::compileTdx(pdx, pdx.parent_path()));
+    } catch (const mpxadrv::TdxError& tdxError) {
+      includePdx = false;
+      std::cerr << "mpxadrv: MDR warning: " << tdxError.what()
+                << "; continuing with FM only\n";
+    }
+  } else if (!includePdx) {
+    std::cerr << "mpxadrv: MDR warning: PCM definition was not found; "
+                 "continuing with FM only\n";
+  }
+  return includePdx;
+}
+
+fs::path writeTemporaryMdx(const TemporaryDirectory& temporary,
+                           const fs::path& input,
+                           const std::vector<std::uint8_t>& mdx) {
+  fs::path filename = input.filename();
+  filename.replace_extension(".mdx");
+  const fs::path path = temporary.path() / filename;
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(mdx.data()),
+               static_cast<std::streamsize>(mdx.size()));
+  if (!output) {
+    throw CliError("failed to prepare MDR FM/PCM playback");
+  }
+  output.close();
+  return path;
+}
+
 int processMdr(const Options& options) {
   std::error_code error;
   const fs::path input = fs::absolute(options.input, error);
@@ -863,6 +967,8 @@ int processMdr(const Options& options) {
     }
     if (sequence.tracks.empty()) {
       std::cout << "Playback: FM/PCM compatibility path\n";
+    } else if (mdr.activeTracks > static_cast<int>(sequence.tracks.size())) {
+      std::cout << "Playback: synchronized MIDI + FM/PCM hybrid\n";
     } else {
       std::cout << "Playback: macOS software MIDI synthesizer";
       if (!mdr.pdxName.empty()) {
@@ -877,33 +983,11 @@ int processMdr(const Options& options) {
   if (sequence.tracks.empty() &&
       (options.command == "play" || options.command == "render")) {
     const fs::path pdx = locateMdrPdx(mdr, input, options.pdxDirectory);
-    bool includePdx = mdr.pdxName.empty() || !pdx.empty();
-    if (includePdx && !pdx.empty() &&
-        asciiLower(pdx.extension().string()) == ".tdx") {
-      try {
-        static_cast<void>(mpxadrv::compileTdx(pdx, pdx.parent_path()));
-      } catch (const mpxadrv::TdxError& tdxError) {
-        includePdx = false;
-        std::cerr << "mpxadrv: MDR warning: " << tdxError.what()
-                  << "; continuing with FM only\n";
-      }
-    } else if (!includePdx) {
-      std::cerr << "mpxadrv: MDR warning: PCM definition was not found; "
-                   "continuing with FM only\n";
-    }
+    const bool includePdx = canLoadMdrPdx(mdr, pdx);
     const std::vector<std::uint8_t> mdx =
         mpxadrv::makeMdxCompatible(mdr, includePdx);
     TemporaryDirectory temporary;
-    fs::path mdxFilename = input.filename();
-    mdxFilename.replace_extension(".mdx");
-    const fs::path mdxPath = temporary.path() / mdxFilename;
-    std::ofstream output(mdxPath, std::ios::binary | std::ios::trunc);
-    output.write(reinterpret_cast<const char*>(mdx.data()),
-                 static_cast<std::streamsize>(mdx.size()));
-    if (!output) {
-      throw CliError("failed to prepare MDR FM/PCM playback");
-    }
-    output.close();
+    const fs::path mdxPath = writeTemporaryMdx(temporary, input, mdx);
 
     Options compatible = options;
     compatible.input = mdxPath;
@@ -922,6 +1006,67 @@ int processMdr(const Options& options) {
     player.play();
     std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
     return 0;
+  }
+
+  if (options.command == "play" && !sequence.tracks.empty() &&
+      mdr.activeTracks > static_cast<int>(sequence.tracks.size())) {
+    try {
+      const std::vector<std::uint8_t> mdx =
+          mpxadrv::makeMdxHardwareCompatible(mdr,
+                                             makeMdxTempoConductor(sequence));
+      const fs::path pdx = locateMdrPdx(mdr, input, options.pdxDirectory);
+      const bool includePdx = canLoadMdrPdx(mdr, pdx);
+      if (!includePdx && !mdr.pdxName.empty()) {
+        throw mpxadrv::MdrError(
+            "hybrid MDR hardware tracks require their PCM sample bank");
+      }
+      TemporaryDirectory temporary;
+      const fs::path mdxPath = writeTemporaryMdx(temporary, input, mdx);
+      Options compatible = options;
+      compatible.input = mdxPath;
+      compatible.pdxDirectory =
+          pdx.empty() ? options.pdxDirectory : pdx.parent_path();
+      Song hardwareSong(compatible);
+      const fs::path soundFont = checkedSoundFont(options.soundFont);
+      printMidiWarnings(sequence);
+      std::cout << (title.empty() ? input.filename().string() : title) << "  ["
+                << formatDuration(durationSeconds) << "]\n"
+                << "Playing MDR MIDI + FM/PCM... press Ctrl-C to stop.\n";
+
+      mpxadrv::SoftwareSynthPlayer midiPlayer(soundFont);
+      midiPlayer.prepare(sequence);
+      AudioPlayer player(hardwareSong);
+      player.prepare();
+      std::atomic<bool> hybridStop{false};
+      std::exception_ptr midiFailure;
+      const auto start = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(150);
+      std::thread midiThread([&] {
+        try {
+          midiPlayer.playPreparedAt(
+              [&] { return gInterrupted != 0 || hybridStop.load(); }, start);
+        } catch (...) {
+          midiFailure = std::current_exception();
+          hybridStop.store(true);
+        }
+      });
+      try {
+        player.playAt(start, [&] { return hybridStop.load(); });
+      } catch (...) {
+        hybridStop.store(true);
+        midiThread.join();
+        throw;
+      }
+      midiThread.join();
+      if (midiFailure) {
+        std::rethrow_exception(midiFailure);
+      }
+      std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
+      return 0;
+    } catch (const mpxadrv::MdrError& hardwareError) {
+      std::cerr << "mpxadrv: MDR warning: " << hardwareError.what()
+                << "; playing MIDI only\n";
+    }
   }
 
   if (options.command == "render") {

@@ -26,16 +26,17 @@ macOS CLI adaptation developed by Awed (c)2026
 - Xcode Command Line Tools
 - CMake
 - [mdxmini](https://github.com/mistydemeo/mdxmini) 2.0 or later
+- [FluidSynth](https://www.fluidsynth.org/) 2.5 or later
 
 Install the build dependencies with Homebrew:
 
 ```sh
-brew install cmake mdxmini
+brew install cmake mdxmini fluid-synth
 ```
 
-`mdxmini` is GPL-2.0-or-later software. A distributed build of this application
-must comply with that license. This repository does not copy or vendor
-`mdxmini`.
+`mdxmini` is GPL-2.0-or-later software and FluidSynth is
+LGPL-2.1-or-later. A distributed build of this application must comply with
+those licenses. This repository does not copy or vendor either dependency.
 
 ## Build
 
@@ -109,12 +110,44 @@ macOS—no external MIDI destination or IAC setup is required:
 ```
 
 The default path uses Apple's multitimbral DLSMusicDevice and its built-in GM
-bank. An SF2 SoundFont or DLS bank can be loaded explicitly; this path uses
-Apple's AUMIDISynth because its sound-bank URL is writable:
+bank. An SF2 SoundFont can be loaded explicitly; custom banks use FluidSynth
+instead of Apple's AUMIDISynth so that sample tuning, modulators, and pitch-bend
+range follow the SoundFont specification:
 
 ```sh
 ./build/mpxadrv midi-synth song.mdx --soundfont instruments.sf2
 ```
+
+### Optional SC-55-style SoundFont
+
+For MADRV files authored for the Roland SC-55, the lightweight SC-55-style
+bank distributed with ScummVM is a useful local reference. The bank is not
+included in this repository. Download the pinned copy into the ignored
+`SoundFonts/` directory:
+
+```sh
+mkdir -p SoundFonts
+curl -L \
+  https://raw.githubusercontent.com/scummvm/scummvm/24813e60febcab5da73f870f035b7675e88b1d39/dists/soundfonts/Roland_SC-55.sf2 \
+  -o SoundFonts/Roland_SC-55.sf2
+shasum -a 256 SoundFonts/Roland_SC-55.sf2
+```
+
+The expected SHA-256 is
+`fca3e514b635a21789d4224e84865d2954a2a914d46b64aa8219ddb565c44869`.
+Use it for hybrid MDR playback with:
+
+```sh
+./build/mpxadrv play song.mdr \
+  --soundfont SoundFonts/Roland_SC-55.sf2
+```
+
+ScummVM identifies the file as `Copyright (c) 2015 deemster`, licensed under
+GPL-3.0-or-later; see its
+[copyright notice](https://github.com/scummvm/scummvm/blob/master/dists/soundfonts/COPYRIGHT.Roland_SC-55).
+`SoundFonts/` is excluded by `.gitignore`, so the downloaded bank is never
+added to this project's GitHub repository. It is an SC-55-oriented software
+approximation, not a bit-exact replacement for Roland hardware.
 
 Compile a MADRV TDX definition into a multi-bank PDX:
 
@@ -137,7 +170,7 @@ Useful options:
 -r, --rate <hz>        sample rate (default: 48000)
 -l, --loops <count>    number of loops (default: 1)
     --destination <id> CoreMIDI destination index or name (midi-play only)
-    --soundfont <path>  SF2 or DLS bank (midi-synth only)
+    --soundfont <path>  SF2 or DLS bank (midi-synth or MDR play)
 ```
 
 Run `./build/mpxadrv --help` for the complete command reference.
@@ -183,11 +216,17 @@ algorithm. SC-55 reset, packed DT1 SysEx, rhythm NRPN, partial-reserve,
 effects, bank, and pedal commands are converted. Other model-specific
 Roland/CM-64/U-110 macros remain variable-length device commands; the converter
 reports the unsupported subcommand and stops that track instead of guessing a
-boundary or sending malformed SysEx. MADRV pitch-LFO/portamento behavior is
-also not yet expanded into dense MIDI pitch-bend events.
+boundary or sending malformed SysEx. MADRV detune and portamento commands are
+expanded into MIDI pitch-bend events at the original one-clock resolution.
+Pitch LFO commands are not yet expanded into MIDI pitch-bend events.
 
-Hybrid MDR files that also contain FM/PCM tracks currently play their MIDI
-portion. Mixed FM/PCM + MIDI WAV rendering is not yet available. An MDR with no
-MIDI events is converted temporarily to a standard 9/16-track MDX layout for
-FM/PCM playback and WAV rendering; if its PDX/TDX dependencies are missing,
-the command warns and continues with its FM portion.
+Hybrid MDR playback separates hardware tracks into a temporary MDX stream and
+starts it in sync with the software MIDI synthesizer. A tempo-conductor track
+keeps both sides aligned through tempo changes and song loops. An SC-55-style
+SF2 bank can be selected with `play song.mdr --soundfont bank.sf2`; custom
+banks are rendered by FluidSynth. The built-in macOS DLS bank is GM-compatible
+but does not reproduce every SC-55 timbre.
+Mixed FM/PCM + MIDI WAV rendering is not yet available. An MDR with no MIDI
+events uses the same 9/16-track MDX compatibility path for playback and WAV
+rendering; if its PDX/TDX dependencies are missing, the command warns and
+continues with its FM portion.

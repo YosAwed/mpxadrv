@@ -46,18 +46,102 @@ int main() {
     require(sequence.tempos[1].tick == 12 && sequence.tempos[1].value == 0xbe,
             "tempo event is wrong");
 
+    const std::vector<std::uint8_t> loopTrack = {
+        0xe0, 0x08, 0x80,  // MIDI channel 1.
+        0x03,              // Four-clock rest at loop start.
+        0xf1, 0xff, 0xfc,  // Loop back four bytes once.
+    };
+    const mpxadrv::MidiSequence loopSequence = mpxadrv::convertMadrvMidi(
+        loopTrack.data(), loopTrack.size(), offsets, 1, 1);
+    require(loopSequence.endTick == 8,
+            "one requested song loop was not replayed");
+
     const auto& events = sequence.tracks[0].events;
-    require(events.size() == 11, "MIDI event count is wrong");
-    require(events[0].bytes == std::vector<std::uint8_t>({0xc0, 0x05}),
+    require(events.size() == 15, "MIDI event count is wrong");
+    const auto program = std::find_if(
+        events.begin(), events.end(), [](const mpxadrv::MidiEvent& event) {
+          return event.bytes == std::vector<std::uint8_t>({0xc0, 0x05});
+        });
+    require(program != events.end(),
             "program change is wrong");
-    require(events[3].bytes ==
-                std::vector<std::uint8_t>({0x90, 0x3c, 0x7f}),
+    const auto polyphonic = std::find_if(
+        events.begin(), events.end(), [](const mpxadrv::MidiEvent& event) {
+          return event.bytes ==
+                 std::vector<std::uint8_t>({0x90, 0x3c, 0x7f});
+        });
+    require(polyphonic != events.end(),
             "polyphonic note-on is wrong");
-    require(events[4].tick == 8 && events[4].bytes[0] == 0x80,
+    const auto polyphonicOff = std::find_if(
+        events.begin(), events.end(), [](const mpxadrv::MidiEvent& event) {
+          return event.tick == 8 && event.bytes ==
+                 std::vector<std::uint8_t>({0x80, 0x3c, 0x00});
+        });
+    require(polyphonicOff != events.end(),
             "note-off timing is wrong");
     require(events.back().bytes ==
                 std::vector<std::uint8_t>({0xc1, 0x09}),
             "direct MIDI command is wrong");
+
+    const std::vector<std::uint8_t> portamentoTrack = {
+        0xe0, 0x08, 0x80,  // Switch track to MIDI channel 1.
+        0xe0, 0x09, 0x0c,  // Bend range 12 semitones.
+        0xf2, 0x10, 0x00,  // Rise one semitone over four clocks.
+        0xf7,              // Keep the MIDI note on while it bends.
+        0x9c, 0x03,        // C4, four clocks.
+        0xf2, 0x00, 0x00,  // Stop the portamento.
+        0x9d, 0x03,        // Continue logically at C#4, then key off.
+        0xf1, 0x00,
+    };
+    const mpxadrv::MidiSequence portamento = mpxadrv::convertMadrvMidi(
+        portamentoTrack.data(), portamentoTrack.size(), offsets, 1, 1);
+    require(portamento.tracks.size() == 1,
+            "portamento track was not emitted");
+    std::vector<mpxadrv::MidiEvent> bends;
+    int noteOns = 0;
+    int noteOffs = 0;
+    for (const auto& event : portamento.tracks[0].events) {
+      const std::uint8_t status = event.bytes.empty() ? 0 : event.bytes[0] & 0xf0;
+      if (status == 0xe0) {
+        bends.push_back(event);
+      } else if (status == 0x90 && event.bytes.size() == 3 &&
+                 event.bytes[2] != 0) {
+        ++noteOns;
+      } else if (status == 0x80 ||
+                 (status == 0x90 && event.bytes.size() == 3 &&
+                  event.bytes[2] == 0)) {
+        ++noteOffs;
+        require(event.tick == 8, "tied portamento note ended too early");
+      }
+    }
+    require(bends.size() == 4,
+            "portamento did not produce one pitch bend per clock");
+    require(bends.front().tick == 0 && bends.back().tick == 3,
+            "portamento pitch-bend timing is wrong");
+    require(bends.front().bytes ==
+                std::vector<std::uint8_t>({0xe0, 0x2a, 0x41}) &&
+                bends.back().bytes ==
+                    std::vector<std::uint8_t>({0xe0, 0x2a, 0x45}),
+            "portamento pitch-bend values are wrong");
+    require(noteOns == 1 && noteOffs == 1,
+            "tied portamento retriggered the MIDI note");
+
+    const std::vector<std::uint8_t> detuneTrack = {
+        0xe0, 0x08, 0x80,  // Switch track to MIDI channel 1.
+        0xf3, 0x00, 0x40,  // One-semitone MADRV detune at range 12.
+        0x9c, 0x00,        // C4, one clock.
+        0xf1, 0x00,
+    };
+    const mpxadrv::MidiSequence detune = mpxadrv::convertMadrvMidi(
+        detuneTrack.data(), detuneTrack.size(), offsets, 1, 1);
+    const auto detuneBend = std::find_if(
+        detune.tracks[0].events.begin(), detune.tracks[0].events.end(),
+        [](const mpxadrv::MidiEvent& event) {
+          return !event.bytes.empty() && (event.bytes[0] & 0xf0) == 0xe0;
+        });
+    require(detuneBend != detune.tracks[0].events.end() &&
+                detuneBend->bytes ==
+                    std::vector<std::uint8_t>({0xe0, 0x2a, 0x45}),
+            "MADRV detune was not converted to MIDI pitch bend");
 
     mpxadrv::MidiSequence timing;
     timing.tempos = {{0, 0xc8, 0}, {10, 0xbe, 1}};

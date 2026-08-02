@@ -32,4 +32,8 @@ MdrFile loadMdr(const std::filesystem::path& path);
 std::vector<std::uint8_t> makeMdxCompatible(const MdrFile& mdr,
                                             bool includePdx = true);
 
+std::vector<std::uint8_t> makeMdxHardwareCompatible(
+    const MdrFile& mdr,
+    const std::vector<std::uint8_t>& conductorTrack = {});
+
 }  // namespace mpxadrv

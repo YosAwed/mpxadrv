@@ -84,6 +84,18 @@ struct TrackConverter {
   int nowVolumeCommand = 8;
   int velocityLevel = 0;
   int velocityCommand = 0;
+  int bendSensitivity = 32768 / 12;
+  int bendResponse = 0;
+  int bendResponseCounter = 0;
+  int bendMode = 0;
+  bool bendRangePending = false;
+  std::uint32_t pitchAccumulator = 0x20000000u;
+  std::int32_t portamentoStep = 0;
+  std::int16_t keyDetune = 0;
+  std::uint16_t lastPitch = 0xffff;
+  bool suppressNextKeyOff = false;
+  bool monophonicNoteActive = false;
+  int monophonicBaseNote = 0;
   bool midi = false;
   bool emitted = false;
   bool stopped = false;
@@ -122,6 +134,27 @@ struct TrackConverter {
     channelEvent(0xb0, controller, static_cast<std::uint8_t>(value & 0x7f));
   }
 
+  void setBendRange(std::uint8_t range, bool emit) {
+    if (midi && emit) {
+      control(100, 0);
+      control(101, 0);
+      control(6, range);
+    }
+    bendSensitivity = range >= 2 && range <= 24 ? 32768 / range : 0;
+    bendResponseCounter = 0;
+    bendRangePending = midi && !emit;
+  }
+
+  void emitPendingBendRange() {
+    if (!bendRangePending) {
+      return;
+    }
+    bendRangePending = false;
+    control(100, 0);
+    control(101, 0);
+    control(6, 12);
+  }
+
   int noteVelocity() const { return (~nowVolume) & 0x7f; }
 
   int gateTicks(int duration) const {
@@ -130,6 +163,53 @@ struct TrackConverter {
       return (encoded * gate) / 8 + 1;
     }
     return std::max(1, duration + gate - 256);
+  }
+
+  void pitchBend(std::uint64_t at) {
+    if (!midi) {
+      return;
+    }
+    emitPendingBendRange();
+    const std::uint16_t pitch = static_cast<std::uint16_t>(
+        (pitchAccumulator >> 16) + static_cast<std::uint16_t>(keyDetune));
+    if (pitch == lastPitch) {
+      return;
+    }
+    if (bendResponseCounter > 0) {
+      --bendResponseCounter;
+      return;
+    }
+    bendResponseCounter = bendResponse;
+    lastPitch = pitch;
+
+    int value = pitch;
+    if (static_cast<std::int16_t>(pitch) < 0) {
+      value = 0;
+    } else if (value > 0x3fff) {
+      value = 0x3fff;
+    }
+    event({static_cast<std::uint8_t>(0xe0 | channel),
+           static_cast<std::uint8_t>(value & 0x7f),
+           static_cast<std::uint8_t>((value >> 7) & 0x7f)},
+          at);
+  }
+
+  void advanceTime(int duration) {
+    if (midi) {
+      for (int elapsed = 0; elapsed < duration; ++elapsed) {
+        pitchAccumulator += static_cast<std::uint32_t>(portamentoStep);
+        pitchBend(tick + static_cast<std::uint64_t>(elapsed));
+      }
+    }
+    tick += static_cast<std::uint64_t>(duration);
+    portamentoStep = 0;
+  }
+
+  void addPitchWord(std::int32_t amount) {
+    const std::uint16_t high = static_cast<std::uint16_t>(
+        (pitchAccumulator >> 16) + static_cast<std::uint16_t>(amount));
+    pitchAccumulator = (static_cast<std::uint32_t>(high) << 16) |
+                       (pitchAccumulator & 0xffffu);
   }
 
   void note(int key, int duration) {
@@ -145,15 +225,35 @@ struct TrackConverter {
               tick + static_cast<std::uint64_t>(off));
       }
       polyNotes.clear();
-      event({static_cast<std::uint8_t>(0x90 | channel),
-             static_cast<std::uint8_t>(key & 0x7f),
-             static_cast<std::uint8_t>(noteVelocity())},
-            tick);
-      event({static_cast<std::uint8_t>(0x80 | channel),
-             static_cast<std::uint8_t>(key & 0x7f), 0},
-            tick + static_cast<std::uint64_t>(off));
+
+      pitchAccumulator = 0x20000000u;
+      if (monophonicNoteActive) {
+        if (bendMode == 0) {
+          const std::int32_t interval =
+              static_cast<std::int32_t>(key - monophonicBaseNote) *
+              bendSensitivity;
+          addPitchWord(interval >> 2);
+          bendResponseCounter = 0;
+        }
+      } else {
+        event({static_cast<std::uint8_t>(0x90 | channel),
+               static_cast<std::uint8_t>(key & 0x7f),
+               static_cast<std::uint8_t>(noteVelocity())},
+              tick);
+        monophonicNoteActive = true;
+        monophonicBaseNote = key;
+      }
+      if (!suppressNextKeyOff) {
+        event({static_cast<std::uint8_t>(0x80 | channel),
+               static_cast<std::uint8_t>(monophonicBaseNote & 0x7f), 0},
+              tick + static_cast<std::uint64_t>(off));
+      }
     }
-    tick += static_cast<std::uint64_t>(duration);
+    advanceTime(duration);
+    if (midi && !suppressNextKeyOff) {
+      monophonicNoteActive = false;
+    }
+    suppressNextKeyOff = false;
   }
 
   void directMidi(std::size_t start, std::size_t count) {
@@ -455,15 +555,21 @@ struct TrackConverter {
 
     switch (subcommand) {
       case 0x08:
+      {
+        const bool wasMidi = midi;
         channel = bytes[parameters] & 0x0f;
         midi = (bytes[parameters] & 0x80) != 0;
-        break;
-      case 0x09:
         if (midi) {
-          control(100, 0);
-          control(101, 0);
-          control(6, bytes[parameters]);
+          pitchAccumulator = 0x20000000u;
+          lastPitch = 0xffff;
+          if (!wasMidi) {
+            setBendRange(12, false);
+          }
         }
+        break;
+      }
+      case 0x09:
+        setBendRange(bytes[parameters], true);
         break;
       case 0x0a:
         if ((velocityCommand & 0x80) == 0) {
@@ -512,6 +618,13 @@ struct TrackConverter {
       case 0x19:
         rolandDevice = bytes[parameters] & 0x7f;
         break;
+      case 0x13:
+        bendMode = bytes[parameters];
+        break;
+      case 0x14:
+        bendResponse = bytes[parameters];
+        bendResponseCounter = 0;
+        break;
       case 0x1d:
         // Present as E0 1D 00 in later MDR samples. It selects a driver
         // timing mode and does not produce MIDI output.
@@ -540,7 +653,8 @@ struct TrackConverter {
 
       const int noteMinimum = midi ? 0x60 : 0x80;
       if (command < noteMinimum) {
-        tick += static_cast<std::uint64_t>(command) + 1;
+        advanceTime(static_cast<int>(command) + 1);
+        suppressNextKeyOff = false;
         continue;
       }
       if (command <= 0xdf) {
@@ -608,9 +722,10 @@ struct TrackConverter {
           }
           position = checkedAdvance(position, 1, bytes.size());
           const std::int16_t offset = readSignedWord(bytes, commandPosition + 1);
-          if (++songLoops >= loopLimit) {
+          if (songLoops >= loopLimit) {
             stopped = true;
           } else {
+            ++songLoops;
             const std::int64_t target = static_cast<std::int64_t>(position) + offset;
             if (target < 0 || target >= static_cast<std::int64_t>(bytes.size())) {
               throw MidiError("song-loop offset leaves MDX data");
@@ -619,10 +734,24 @@ struct TrackConverter {
           }
           break;
         }
-        case 0xf2:
-        case 0xf3:
+        case 0xf2: {
           position = checkedAdvance(position, 2, bytes.size());
+          const std::int16_t amount = readSignedWord(bytes, commandPosition + 1);
+          portamentoStep = static_cast<std::int32_t>(amount) * bendSensitivity;
+          bendResponseCounter = 0;
           break;
+        }
+        case 0xf3: {
+          position = checkedAdvance(position, 2, bytes.size());
+          const std::int32_t scaled =
+              static_cast<std::int32_t>(
+                  readSignedWord(bytes, commandPosition + 1)) *
+              bendSensitivity;
+          keyDetune = static_cast<std::int16_t>(
+              scaled >= 0 ? scaled / 256 : -(((-scaled) + 255) / 256));
+          bendResponseCounter = 0;
+          break;
+        }
         case 0xf4: {
           position = checkedAdvance(position, 2, bytes.size());
           const std::int16_t outer = readSignedWord(bytes, commandPosition + 1);
@@ -665,6 +794,7 @@ struct TrackConverter {
           bytes[position - 1] = bytes[position - 2];
           break;
         case 0xf7:
+          suppressNextKeyOff = true;
           break;
         case 0xf8:
           position = checkedAdvance(position, 1, bytes.size());
@@ -809,6 +939,9 @@ MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
     converter.loopLimit = loops;
     converter.midi = track >= 16;
     converter.channel = track & 0x0f;
+    if (converter.midi) {
+      converter.setBendRange(12, false);
+    }
     converter.run();
     sequence.endTick = std::max(sequence.endTick, converter.result.endTick);
     if (converter.emitted) {
