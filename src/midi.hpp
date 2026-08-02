@@ -1,8 +1,10 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -38,6 +40,10 @@ struct MidiSequence {
   std::vector<MidiTrack> tracks;
   std::vector<std::string> warnings;
   std::uint64_t endTick = 0;
+  // Tick where the song's L (F1) first jumped back during conversion.
+  // Used by software/CoreMIDI players to repeat from that point forever.
+  std::uint64_t loopStartTick = 0;
+  bool hasSongLoop = false;
 };
 
 struct ScheduledMidiEvent {
@@ -49,13 +55,40 @@ MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
                               const int* trackOffsets, int trackCount,
                               int loops);
 
+// When sampleRate > 0, event times match mdxmini's integer sample quantisation
+// at that rate (see mdx_calc_sample). Hybrid FM+MIDI playback must pass the
+// FM stream rate so the two clocks do not drift apart over long songs.
 std::vector<ScheduledMidiEvent> scheduleMidiEvents(
-    const MidiSequence& sequence);
+    const MidiSequence& sequence, int sampleRate = 0);
 
-std::uint64_t midiDurationMicroseconds(const MidiSequence& sequence);
+std::uint64_t midiDurationMicroseconds(const MidiSequence& sequence,
+                                       int sampleRate = 0);
+
+std::uint64_t midiTickMicroseconds(const MidiSequence& sequence,
+                                   std::uint64_t tick, int sampleRate = 0);
+
+// Plays scheduled events once, or forever from loopStartUs when infinite is set
+// and loopStartUs is within the sequence. send() delivers each MIDI message.
+void playScheduledMidiEvents(
+    const std::vector<ScheduledMidiEvent>& events,
+    std::uint64_t loopStartUs, bool infinite,
+    std::chrono::steady_clock::time_point start,
+    const std::function<bool()>& shouldStop,
+    const std::function<void(const std::vector<std::uint8_t>&)>& send);
 
 void writeStandardMidi(const MidiSequence& sequence,
                        const std::filesystem::path& path,
                        const std::string& title);
+
+// SC-55 bank MSB 127 is the MT-32/CM-64 tone map. Lightweight SC-55 SoundFonts
+// (and Apple's GM bank) omit that variation, so software playback remaps those
+// programs onto GS capital tones. Bank MSB 126 (CM-32P) falls back to bank 0
+// with the same program number. Other banks are left unchanged.
+void resolveSoftwareSynthPreset(int bankMsb, int program, int& outBank,
+                                int& outProgram);
+
+// MADRV drum tracks sometimes store Roland's 1-based kit numbers (17=Power,
+// 57=SFX, ...). Map those onto the 0-based GS kit list used by SoundFonts.
+int resolveRhythmProgram(int program);
 
 }  // namespace mpxadrv

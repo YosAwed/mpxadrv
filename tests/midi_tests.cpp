@@ -55,6 +55,8 @@ int main() {
         loopTrack.data(), loopTrack.size(), offsets, 1, 1);
     require(loopSequence.endTick == 8,
             "one requested song loop was not replayed");
+    require(loopSequence.hasSongLoop && loopSequence.loopStartTick == 4,
+            "song loop start tick was not recorded");
 
     const auto& events = sequence.tracks[0].events;
     require(events.size() == 15, "MIDI event count is wrong");
@@ -156,6 +158,17 @@ int main() {
     timing.endTick = 20;
     require(mpxadrv::midiDurationMicroseconds(timing) == 312320,
             "tempo-aware MIDI duration is wrong");
+    // At 48 kHz, mdxmini truncates each Timer-B period to an integer sample
+    // count. Hybrid playback must use the same quantisation.
+    const auto quantised = mpxadrv::scheduleMidiEvents(timing, 48000);
+    require(quantised.size() == 2, "quantised MIDI event count is wrong");
+    require(quantised[0].microseconds == 0, "first quantised event is late");
+    require(quantised[1].microseconds == 177125,
+            "48 kHz-quantised MIDI scheduling is wrong");
+    require(mpxadrv::midiDurationMicroseconds(timing, 48000) == 312291,
+            "48 kHz-quantised MIDI duration is wrong");
+    require(quantised[1].microseconds < scheduled[1].microseconds,
+            "quantised schedule should be slightly shorter than exact us");
 
     const std::filesystem::path output =
         std::filesystem::temp_directory_path() /
@@ -243,6 +256,31 @@ int main() {
                         encodedMt32Reset.begin(), encodedMt32Reset.end()) !=
                 resetFile.end(),
             "SMF SysEx encoding is wrong");
+
+    int bank = -1;
+    int preset = -1;
+    mpxadrv::resolveSoftwareSynthPreset(127, 3, bank, preset);
+    require(bank == 0 && preset == 4,
+            "MT-32 map electric piano was not remapped to GS E.Piano 1");
+    mpxadrv::resolveSoftwareSynthPreset(0, 65, bank, preset);
+    require(bank == 0 && preset == 65,
+            "ordinary GS bank/program must stay unchanged");
+    mpxadrv::resolveSoftwareSynthPreset(8, 48, bank, preset);
+    require(bank == 8 && preset == 48,
+            "GS variation bank must stay unchanged");
+    mpxadrv::resolveSoftwareSynthPreset(126, 10, bank, preset);
+    require(bank == 0 && preset == 10,
+            "CM-32P map should fall back to bank 0");
+    require(mpxadrv::resolveRhythmProgram(57) == 0,
+            "bogus PC 57 should fall back to Standard, not SFX");
+    require(mpxadrv::resolveRhythmProgram(56) == 56,
+            "0-based SFX drum kit must stay unchanged");
+    require(mpxadrv::resolveRhythmProgram(17) == 16,
+            "1-based Power drum kit was not remapped");
+    require(mpxadrv::resolveRhythmProgram(0) == 0,
+            "Standard drum kit must stay unchanged");
+    require(mpxadrv::resolveRhythmProgram(3) == 0,
+            "unknown drum program should fall back to Standard");
 
     std::cout << "MIDI conversion tests passed\n";
     return 0;

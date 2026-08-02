@@ -48,6 +48,28 @@ ctest --test-dir build --output-on-failure
 
 The executable is created at `build/mpxadrv`.
 
+### Interactive song menu
+
+To select songs without typing each filename, change to a folder containing
+MDR/MDX files and run the terminal menu:
+
+```sh
+cd Reference/MDR
+../../scripts/mpxadrv-player.command
+```
+
+The menu lists the current folder, plays the selected number, and returns to
+the list when playback finishes. `r` refreshes the folder and `q` exits. A
+folder can also be passed explicitly:
+
+```sh
+scripts/mpxadrv-player.command /path/to/music
+```
+
+The script automatically uses `build/mpxadrv` and the local ignored
+`SoundFonts/Roland_SC-55.sf2` when available. Override either path with
+`MPXADRV_BIN` or `MPXADRV_SOUNDFONT`.
+
 ## Usage
 
 Play an MDX file:

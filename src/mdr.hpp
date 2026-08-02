@@ -29,6 +29,10 @@ struct MdrFile {
 
 MdrFile loadMdr(const std::filesystem::path& path);
 
+// Counts FM/PCM channels that actually emit notes before the song loop.
+// Empty hardware-channel stubs (common in MIDI-only MDR files) are ignored.
+int countSeparableHardwareTracks(const MdrFile& mdr);
+
 std::vector<std::uint8_t> makeMdxCompatible(const MdrFile& mdr,
                                             bool includePdx = true);
 

@@ -1,6 +1,7 @@
 #include "mdr.hpp"
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -63,6 +64,54 @@ std::size_t e0CommandLength(const std::vector<std::uint8_t>& bytes,
   return length;
 }
 
+std::size_t e2CommandLength(const std::vector<std::uint8_t>& bytes,
+                            std::size_t position, std::size_t end) {
+  if (position + 2 > end) {
+    throw MdrError("truncated E2 command in MDR MIDI track");
+  }
+  const std::uint8_t subcommand = bytes[position + 1];
+  std::size_t length = 0;
+  if (subcommand == 0x00 || subcommand == 0x14 || subcommand == 0x1c ||
+      subcommand == 0x35 || subcommand == 0x36) {
+    length = 2;
+  } else if (subcommand == 0x1d ||
+             (subcommand >= 0x23 && subcommand <= 0x27) ||
+             subcommand == 0x2b ||
+             (subcommand >= 0x2c && subcommand <= 0x30) ||
+             (subcommand >= 0x38 && subcommand <= 0x3a)) {
+    length = 3;
+  } else if ((subcommand >= 0x1e && subcommand <= 0x22) ||
+             subcommand == 0x32 || subcommand == 0x34 ||
+             subcommand == 0x37) {
+    length = 4;
+  } else if (subcommand >= 0x28 && subcommand <= 0x2a) {
+    if (position + 3 > end) {
+      throw MdrError("truncated packed E2 command in MDR MIDI track");
+    }
+    length = 3 + static_cast<std::size_t>(bytes[position + 2]);
+  } else if (subcommand == 0x31) {
+    if (position + 6 > end) {
+      throw MdrError("truncated E2 memory-write command in MDR MIDI track");
+    }
+    length = 6 + static_cast<std::size_t>(bytes[position + 5]);
+  } else if (subcommand == 0x33) {
+    std::size_t cursor = position + 2;
+    while (cursor < end && bytes[cursor] != 0) {
+      ++cursor;
+    }
+    if (cursor >= end) {
+      throw MdrError("unterminated E2 display command in MDR MIDI track");
+    }
+    length = cursor - position + 1;
+  } else {
+    throw MdrError("unsupported E2 subcommand in MDR MIDI track");
+  }
+  if (position + length > end) {
+    throw MdrError("truncated E2 command in MDR MIDI track");
+  }
+  return length;
+}
+
 std::size_t standardCommandLength(const std::vector<std::uint8_t>& bytes,
                                   std::size_t position, std::size_t end,
                                   bool midi) {
@@ -82,6 +131,9 @@ std::size_t standardCommandLength(const std::vector<std::uint8_t>& bytes,
   }
   if (command == 0xe0) {
     return e0CommandLength(bytes, position, end);
+  }
+  if (command == 0xe2 && midi) {
+    return e2CommandLength(bytes, position, end);
   }
   std::size_t length = 0;
   switch (command) {
@@ -132,12 +184,13 @@ std::size_t standardCommandLength(const std::vector<std::uint8_t>& bytes,
     case 0xfe:
       length = 3;
       break;
-    case 0xe2:
     case 0xe3:
     case 0xe4:
     case 0xe5:
     case 0xe6:
-      throw MdrError("unsupported MADRV command in MDR hardware track");
+      throw MdrError("unsupported MADRV command " +
+                     std::to_string(static_cast<unsigned>(command)) +
+                     " in MDR hardware track");
     default:
       throw MdrError("unknown command in MDR hardware track");
   }
@@ -154,27 +207,24 @@ std::optional<int> initialHardwareChannel(const MdrFile& mdr, int track) {
           ? static_cast<std::size_t>(mdr.trackOffsets[track + 1])
           : mdr.toneOffset;
   bool midi = track >= 16;
+  int channel = track & 0x0f;
   while (position < end) {
     const std::uint8_t command = mdr.data[position];
-    if (command == 0xe8) {
-      ++position;
-      continue;
-    }
     if (command == 0xf1) {
       return std::nullopt;
     }
-    if (command != 0xe0) {
-      return midi ? std::nullopt : std::optional<int>(track & 0x0f);
+    const std::uint8_t noteMinimum = midi ? 0x60 : 0x80;
+    if (command >= noteMinimum && command <= 0xdf) {
+      if (!midi) {
+        return channel;
+      }
     }
-    const std::size_t length = e0CommandLength(mdr.data, position, end);
-    const std::uint8_t subcommand = mdr.data[position + 1];
-    if (subcommand == 0x08) {
+    const std::size_t length =
+        standardCommandLength(mdr.data, position, end, midi);
+    if (command == 0xe0 && mdr.data[position + 1] == 0x08) {
       const std::uint8_t value = mdr.data[position + 2];
       midi = (value & 0x80) != 0;
-      if (!midi) {
-        return value & 0x0f;
-      }
-      return std::nullopt;
+      channel = value & 0x0f;
     }
     position += length;
   }
@@ -197,8 +247,43 @@ void appendNeutralCommands(std::vector<std::uint8_t>& output,
   }
 }
 
+// PCM8 v0.48 defines level 8 as the original sample volume and each level as
+// a 2 dB step. libmdxmini instead applies the FM attenuation values linearly
+// to PCM, which makes quiet PCM8 levels almost as loud as the highest one.
+// Preserve libmdxmini's established default PCM balance at level 8 while
+// retaining PCM8's 2 dB spacing below it. PCM8 levels above 8 require gain
+// beyond libmdxmini's range, so those levels saturate at its maximum.
+constexpr std::array<std::uint8_t, 16> kPcm8LinearGain = {
+    17, 21, 27, 34, 42, 53, 67, 84,
+    106, 127, 127, 127, 127, 127, 127, 127,
+};
+
+int pcm8Level(std::uint8_t volume) {
+  if ((volume & 0x80) == 0) {
+    return std::min<int>(volume, 15);
+  }
+
+  // MADRV's PCMVEL_TBL maps raw @v attenuation to PCM8's 16 levels.
+  constexpr std::array<std::uint8_t, 15> kUpperBounds = {
+      2, 5, 8, 10, 13, 16, 18, 21, 24, 26, 29, 32, 34, 37, 40,
+  };
+  const int attenuation = volume & 0x7f;
+  for (std::size_t index = 0; index < kUpperBounds.size(); ++index) {
+    if (attenuation < kUpperBounds[index]) {
+      return 15 - static_cast<int>(index);
+    }
+  }
+  return 0;
+}
+
+std::uint8_t pcm8VolumeForMdxmini(std::uint8_t volume) {
+  const std::uint8_t gain = kPcm8LinearGain[pcm8Level(volume)];
+  // A raw MDX volume byte is decoded by libmdxmini as 255 - byte.
+  return static_cast<std::uint8_t>(0xff - gain);
+}
+
 std::vector<std::uint8_t> neutralizedHardwareTrack(const MdrFile& mdr,
-                                                   int track) {
+                                                   int track, bool pcm) {
   std::size_t position = static_cast<std::size_t>(mdr.trackOffsets[track]);
   const std::size_t end =
       track + 1 < MdrFile::kTrackCount
@@ -207,6 +292,12 @@ std::vector<std::uint8_t> neutralizedHardwareTrack(const MdrFile& mdr,
   bool midi = track >= 16;
   std::vector<std::uint8_t> output;
   output.reserve(end - position);
+  if (pcm) {
+    // MADRV and PCM8 default to level 8. Establish the same default before a
+    // track that starts playing without an explicit FB command.
+    output.push_back(0xfb);
+    output.push_back(pcm8VolumeForMdxmini(8));
+  }
   while (position < end) {
     const std::uint8_t command = mdr.data[position];
     const std::size_t length =
@@ -216,9 +307,15 @@ std::vector<std::uint8_t> neutralizedHardwareTrack(const MdrFile& mdr,
         midi = (mdr.data[position + 2] & 0x80) != 0;
       }
       appendNeutralCommands(output, length);
+    } else if (midi && command == 0xe2) {
+      // MIDI system-exclusive setup is emitted by the separate MIDI player.
+      appendNeutralCommands(output, length);
     } else if (command == 0xe8) {
       // The rebuilt MDX adds its own EX-PCM marker to the first track.
       output.push_back(0xf7);
+    } else if (pcm && command == 0xfb) {
+      output.push_back(command);
+      output.push_back(pcm8VolumeForMdxmini(mdr.data[position + 1]));
     } else {
       output.insert(output.end(), mdr.data.begin() + position,
                     mdr.data.begin() + position + length);
@@ -226,6 +323,21 @@ std::vector<std::uint8_t> neutralizedHardwareTrack(const MdrFile& mdr,
     position += length;
   }
   return output;
+}
+
+std::array<int, 16> findHardwareTrackSources(const MdrFile& mdr) {
+  std::array<int, 16> sources{};
+  sources.fill(-1);
+  for (int track = 0; track < MdrFile::kTrackCount; ++track) {
+    const std::optional<int> channel = initialHardwareChannel(mdr, track);
+    if (!channel || *channel < 0 || *channel >= 16) {
+      continue;
+    }
+    if (sources[*channel] < 0) {
+      sources[*channel] = track;
+    }
+  }
+  return sources;
 }
 
 }  // namespace
@@ -321,6 +433,13 @@ MdrFile loadMdr(const std::filesystem::path& path) {
   return result;
 }
 
+int countSeparableHardwareTracks(const MdrFile& mdr) {
+  const std::array<int, 16> sources = findHardwareTrackSources(mdr);
+  return static_cast<int>(
+      std::count_if(sources.begin(), sources.end(),
+                    [](int source) { return source >= 0; }));
+}
+
 std::vector<std::uint8_t> makeMdxCompatible(const MdrFile& mdr,
                                             bool includePdx) {
   if (mdr.dataOffset > mdr.data.size() || mdr.toneOffset > mdr.data.size()) {
@@ -380,20 +499,15 @@ std::vector<std::uint8_t> makeMdxCompatible(const MdrFile& mdr,
 
 std::vector<std::uint8_t> makeMdxHardwareCompatible(
     const MdrFile& mdr, const std::vector<std::uint8_t>& conductorTrack) {
-  std::array<int, 16> sources{};
-  sources.fill(-1);
+  const std::array<int, 16> sources = findHardwareTrackSources(mdr);
   bool hasPcm = false;
   int hardwareTracks = 0;
-  for (int track = 0; track < MdrFile::kTrackCount; ++track) {
-    const std::optional<int> channel = initialHardwareChannel(mdr, track);
-    if (!channel || *channel < 0 || *channel >= 16) {
+  for (int channel = 0; channel < 16; ++channel) {
+    if (sources[channel] < 0) {
       continue;
     }
-    if (sources[*channel] < 0) {
-      sources[*channel] = track;
-      hasPcm = hasPcm || *channel >= 8;
-      ++hardwareTracks;
-    }
+    hasPcm = hasPcm || channel >= 8;
+    ++hardwareTracks;
   }
   if (hardwareTracks == 0) {
     throw MdrError("MDR contains no separable FM/PCM hardware tracks");
@@ -436,7 +550,7 @@ std::vector<std::uint8_t> makeMdxHardwareCompatible(
       continue;
     }
     const std::vector<std::uint8_t> track =
-        neutralizedHardwareTrack(mdr, sources[channel]);
+        neutralizedHardwareTrack(mdr, sources[channel], channel >= 8);
     result.insert(result.end(), track.begin(), track.end());
   }
 

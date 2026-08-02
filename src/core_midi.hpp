@@ -12,6 +12,7 @@ std::vector<std::string> midiDestinationNames();
 
 void playMidiSequence(const MidiSequence& sequence,
                       const std::string& destinationSelector,
-                      const std::function<bool()>& shouldStop);
+                      const std::function<bool()>& shouldStop,
+                      bool infinite = false);
 
 }  // namespace mpxadrv

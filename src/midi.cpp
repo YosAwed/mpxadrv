@@ -5,6 +5,7 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 namespace mpxadrv {
@@ -725,6 +726,12 @@ struct TrackConverter {
           if (songLoops >= loopLimit) {
             stopped = true;
           } else {
+            if (songLoops == 0) {
+              if (!sequence.hasSongLoop || tick < sequence.loopStartTick) {
+                sequence.loopStartTick = tick;
+                sequence.hasSongLoop = true;
+              }
+            }
             ++songLoops;
             const std::int64_t target = static_cast<std::int64_t>(position) + offset;
             if (target < 0 || target >= static_cast<std::int64_t>(bytes.size())) {
@@ -959,8 +966,26 @@ MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
   return sequence;
 }
 
+namespace {
+
+// OPM Timer-B period in microseconds: 256 * (256 - tempo).
+// mdxmini converts each period to samples with integer truncation:
+//   samples += (sampleRate * periodUs) / 1'000'000
+// Hybrid MIDI must accumulate in that sample domain, then convert back.
+std::uint64_t samplesPerTick(std::uint8_t tempo, int sampleRate) {
+  const std::uint64_t usPerTick =
+      256u * (256u - static_cast<unsigned>(tempo));
+  return (static_cast<std::uint64_t>(sampleRate) * usPerTick) / 1'000'000u;
+}
+
+std::uint64_t samplesToMicroseconds(std::uint64_t samples, int sampleRate) {
+  return (samples * 1'000'000u) / static_cast<std::uint64_t>(sampleRate);
+}
+
+}  // namespace
+
 std::vector<ScheduledMidiEvent> scheduleMidiEvents(
-    const MidiSequence& sequence) {
+    const MidiSequence& sequence, int sampleRate) {
   struct PendingEvent {
     std::uint64_t tick = 0;
     std::uint64_t order = 0;
@@ -999,28 +1024,53 @@ std::vector<ScheduledMidiEvent> scheduleMidiEvents(
 
   std::vector<ScheduledMidiEvent> scheduled;
   scheduled.reserve(pending.size());
-  std::uint64_t elapsed = 0;
+  std::uint64_t elapsedUs = 0;
+  std::uint64_t elapsedSamples = 0;
   std::uint64_t previousTick = 0;
   std::uint8_t tempo = 0xc8;
   std::size_t tempoIndex = 0;
+
+  auto advance = [&](std::uint64_t ticks) {
+    if (sampleRate > 0) {
+      elapsedSamples += ticks * samplesPerTick(tempo, sampleRate);
+    } else {
+      elapsedUs +=
+          ticks * (256u * (256u - static_cast<unsigned>(tempo)));
+    }
+  };
+
   for (PendingEvent& event : pending) {
     while (tempoIndex < tempos.size() &&
            tempos[tempoIndex].tick <= event.tick) {
       const MidiTempo& change = tempos[tempoIndex++];
-      elapsed += (change.tick - previousTick) *
-                 (256u * (256u - static_cast<unsigned>(tempo)));
+      advance(change.tick - previousTick);
       previousTick = change.tick;
       tempo = change.value;
     }
-    const std::uint64_t eventTime =
-        elapsed + (event.tick - previousTick) *
-                      (256u * (256u - static_cast<unsigned>(tempo)));
+    // Peek time at event without committing tempo-segment state beyond it.
+    std::uint64_t eventTime = 0;
+    if (sampleRate > 0) {
+      eventTime = samplesToMicroseconds(
+          elapsedSamples +
+              (event.tick - previousTick) * samplesPerTick(tempo, sampleRate),
+          sampleRate);
+    } else {
+      eventTime =
+          elapsedUs + (event.tick - previousTick) *
+                          (256u * (256u - static_cast<unsigned>(tempo)));
+    }
     scheduled.push_back({eventTime, std::move(event.bytes)});
   }
   return scheduled;
 }
 
-std::uint64_t midiDurationMicroseconds(const MidiSequence& sequence) {
+std::uint64_t midiDurationMicroseconds(const MidiSequence& sequence,
+                                       int sampleRate) {
+  return midiTickMicroseconds(sequence, sequence.endTick, sampleRate);
+}
+
+std::uint64_t midiTickMicroseconds(const MidiSequence& sequence,
+                                   std::uint64_t tick, int sampleRate) {
   std::vector<MidiTempo> tempos = sequence.tempos;
   std::stable_sort(tempos.begin(), tempos.end(),
                    [](const MidiTempo& left, const MidiTempo& right) {
@@ -1030,21 +1080,89 @@ std::uint64_t midiDurationMicroseconds(const MidiSequence& sequence) {
                      return left.order < right.order;
                    });
 
-  std::uint64_t elapsed = 0;
+  std::uint64_t elapsedUs = 0;
+  std::uint64_t elapsedSamples = 0;
   std::uint64_t previousTick = 0;
   std::uint8_t tempo = 0xc8;
   for (const MidiTempo& change : tempos) {
-    if (change.tick > sequence.endTick) {
+    if (change.tick > tick) {
       break;
     }
-    elapsed += (change.tick - previousTick) *
-               (256u * (256u - static_cast<unsigned>(tempo)));
+    const std::uint64_t span = change.tick - previousTick;
+    if (sampleRate > 0) {
+      elapsedSamples += span * samplesPerTick(tempo, sampleRate);
+    } else {
+      elapsedUs += span * (256u * (256u - static_cast<unsigned>(tempo)));
+    }
     previousTick = change.tick;
     tempo = change.value;
   }
-  return elapsed +
-         (sequence.endTick - previousTick) *
-             (256u * (256u - static_cast<unsigned>(tempo)));
+  const std::uint64_t remain = tick - previousTick;
+  if (sampleRate > 0) {
+    return samplesToMicroseconds(
+        elapsedSamples + remain * samplesPerTick(tempo, sampleRate),
+        sampleRate);
+  }
+  return elapsedUs +
+         remain * (256u * (256u - static_cast<unsigned>(tempo)));
+}
+
+void playScheduledMidiEvents(
+    const std::vector<ScheduledMidiEvent>& events,
+    std::uint64_t loopStartUs, bool infinite,
+    std::chrono::steady_clock::time_point start,
+    const std::function<bool()>& shouldStop,
+    const std::function<void(const std::vector<std::uint8_t>&)>& send) {
+  if (events.empty()) {
+    return;
+  }
+
+  const bool canLoop =
+      infinite && loopStartUs != std::numeric_limits<std::uint64_t>::max() &&
+      events.back().microseconds > loopStartUs;
+  std::size_t loopIndex = 0;
+  if (canLoop) {
+    while (loopIndex < events.size() &&
+           events[loopIndex].microseconds < loopStartUs) {
+      ++loopIndex;
+    }
+    if (loopIndex >= events.size()) {
+      return;
+    }
+  }
+
+  auto timeOrigin = start;
+  std::size_t index = 0;
+  bool firstPass = true;
+  while (true) {
+    if (shouldStop && shouldStop()) {
+      break;
+    }
+    if (index >= events.size()) {
+      if (!canLoop) {
+        break;
+      }
+      // Replay from the song's L point without silencing hanging notes.
+      index = loopIndex;
+      firstPass = false;
+      timeOrigin = std::chrono::steady_clock::now() -
+                   std::chrono::microseconds(loopStartUs);
+      continue;
+    }
+    const ScheduledMidiEvent& event = events[index++];
+    if (!firstPass && event.microseconds < loopStartUs) {
+      continue;
+    }
+    std::this_thread::sleep_until(
+        timeOrigin + std::chrono::microseconds(event.microseconds));
+    if (shouldStop && shouldStop()) {
+      break;
+    }
+    send(event.bytes);
+  }
+  if (!(shouldStop && shouldStop()) && !canLoop) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(750));
+  }
 }
 
 void writeStandardMidi(const MidiSequence& sequence,
@@ -1136,6 +1254,66 @@ void writeStandardMidi(const MidiSequence& sequence,
   if (!output) {
     throw MidiError("failed while writing MIDI file: " + path.string());
   }
+}
+
+void resolveSoftwareSynthPreset(int bankMsb, int program, int& outBank,
+                                int& outProgram) {
+  const int sanitizedProgram = program & 0x7f;
+  // ScummVM's shared MT-32 → GM table. Used when an SC-55 SoundFont lacks the
+  // hardware's variation-127 (MT-32/CM-64) tone map.
+  static constexpr std::array<std::uint8_t, 128> kMt32ToGm = {
+      // clang-format off
+      //  0    1    2    3    4    5    6    7    8    9    A    B    C    D    E    F
+          0,   1,   0,   4,   4,   5,   5,   3,  16,  17,  18,  16,  16,  19,  20,  21,  // 0x
+          6,   6,   6,   7,   7,   7,   8, 112,  62,  62,  63,  63,  38,  38,  39,  39,  // 1x
+         88,  95,  52,  98,  97,  99,  14,  54, 102,  96,  53, 102,  81, 100,  14,  80,  // 2x
+         48,  48,  49,  45,  41,  40,  42,  42,  43,  46,  45,  24,  25,  28,  27, 104,  // 3x
+         32,  32,  34,  33,  36,  37,  35,  35,  79,  73,  72,  72,  74,  75,  64,  65,  // 4x
+         66,  67,  71,  71,  68,  69,  70,  22,  56,  59,  57,  57,  60,  60,  58,  61,  // 5x
+         61,  11,  11,  98,  14,   9,  14,  13,  12, 107, 107,  77,  78,  78,  76,  76,  // 6x
+         47, 117, 127, 118, 118, 116, 115, 119, 115, 112,  55, 124, 123,   0,  14, 117,  // 7x
+      // clang-format on
+  };
+
+  if (bankMsb == 127) {
+    // Prefer E.Piano 1/2 for the MT-32 set's electric pianos (SCB-55 names),
+    // matching GS capitals present in SC-55-style SoundFonts.
+    outBank = 0;
+    outProgram = kMt32ToGm[static_cast<std::size_t>(sanitizedProgram)];
+    return;
+  }
+  if (bankMsb == 126) {
+    // CM-32P map is also absent from the lightweight SF2; fall back to GM.
+    outBank = 0;
+    outProgram = sanitizedProgram;
+    return;
+  }
+  outBank = bankMsb & 0x7f;
+  outProgram = sanitizedProgram;
+}
+
+int resolveRhythmProgram(int program) {
+  static constexpr std::array<int, 10> kGsDrumKits = {
+      0, 8, 16, 24, 25, 32, 40, 48, 56, 127,
+  };
+  const int sanitized = program & 0x7f;
+  const auto isKit = [&](int value) {
+    return std::find(kGsDrumKits.begin(), kGsDrumKits.end(), value) !=
+           kGsDrumKits.end();
+  };
+  if (isKit(sanitized)) {
+    return sanitized;
+  }
+  // Some MADRV files store Roland's 1-based display numbers (17=Power, ...).
+  // Do not treat 57 as SFX (56): that kit lacks normal kick/snare/hat notes, so
+  // grooves that used FluidSynth's old "missing → Standard" fallback went silent.
+  if (sanitized > 0 && isKit(sanitized - 1)) {
+    if (sanitized - 1 == 56) {
+      return 0;
+    }
+    return sanitized - 1;
+  }
+  return 0;
 }
 
 }  // namespace mpxadrv

@@ -45,7 +45,7 @@ namespace {
 
 constexpr const char* kVersion = "0.6.1";
 constexpr int kDefaultRate = 48'000;
-constexpr int kDefaultLoops = 1;
+constexpr int kDefaultLoops = 0;  // 0 = follow the song's L forever
 constexpr std::uint32_t kFramesPerBuffer = 2'048;
 constexpr int kQueueBufferCount = 3;
 
@@ -145,6 +145,18 @@ struct Options {
   int loops = kDefaultLoops;
 };
 
+int expansionLoops(const Options& options) {
+  // SMF/WAV and the MIDI converter need a finite expansion. Infinite playback
+  // expands one L cycle and restarts from that point in the player.
+  return options.loops == 0 ? 1 : options.loops;
+}
+
+bool infinitePlayback(const Options& options) {
+  return options.loops == 0 &&
+         (options.command == "play" || options.command == "midi-synth" ||
+          options.command == "midi-play");
+}
+
 int parseInteger(const std::string& value, const char* option) {
   std::size_t consumed = 0;
   long parsed = 0;
@@ -180,7 +192,7 @@ void printUsage(std::ostream& stream) {
       << "      --destination <id> CoreMIDI destination index or name\n"
       << "      --soundfont <path>  SF2 or DLS bank for midi-synth/MDR play\n"
       << "  -r, --rate <hz>        Sample rate, 8000-192000 (default: 48000)\n"
-      << "  -l, --loops <count>    Number of song loops, 1-100 (default: 1)\n"
+      << "  -l, --loops <count>    Song L repeats: 0=forever (default), 1-100=finite\n"
       << "  -h, --help             Show this help\n"
       << "      --version          Show version\n";
 }
@@ -256,8 +268,8 @@ Options parseArguments(int argc, char* argv[]) {
   if (options.rate < 8'000 || options.rate > 192'000) {
     throw CliError("sample rate must be between 8000 and 192000 Hz");
   }
-  if (options.loops < 1 || options.loops > 100) {
-    throw CliError("loops must be between 1 and 100");
+  if (options.loops < 0 || options.loops > 100) {
+    throw CliError("loops must be between 0 (forever) and 100");
   }
   if (options.command == "render" && options.output.empty()) {
     options.output = options.input;
@@ -427,12 +439,18 @@ class Song {
     extensions_ = mpxadrv::scanMadrvExtensions(
         context_.mdx->data, static_cast<std::size_t>(context_.mdx->length),
         context_.mdx->mml_data_offset, context_.mdx->tracks);
-    mdx_set_max_loop(&context_, options.loops);
+    infiniteLoops_ = infinitePlayback(options);
+    // Duration uses one L cycle when looping forever so info/WAV bounds stay
+    // finite; playback then sets max_infinite_loops to 0 (mdxmini: never stop).
+    mdx_set_max_loop(&context_, expansionLoops(options));
     duration_ = mdx_get_length(&context_);
     if (duration_ <= 0) {
       mdx_close(&context_);
       opened_ = false;
       throw CliError("the MDX song has no playable duration");
+    }
+    if (infiniteLoops_) {
+      mdx_set_max_loop(&context_, 0);
     }
     channels_ = context_.channels;
     if (channels_ < 1 || channels_ > 2) {
@@ -459,6 +477,7 @@ class Song {
   int rate() const { return rate_; }
   int channels() const { return channels_; }
   int duration() const { return duration_; }
+  bool infiniteLoops() const { return infiniteLoops_; }
   int tracks() const { return mdx_get_tracks(const_cast<t_mdxmini*>(&context_)); }
   std::uint64_t totalFrames() const {
     return static_cast<std::uint64_t>(duration_) * static_cast<std::uint64_t>(rate_);
@@ -518,6 +537,7 @@ class Song {
  private:
   t_mdxmini context_{};
   bool opened_ = false;
+  bool infiniteLoops_ = false;
   int rate_ = 0;
   int channels_ = 0;
   int duration_ = 0;
@@ -626,7 +646,11 @@ void requireAudio(OSStatus status, const char* operation) {
 class AudioPlayer {
  public:
   explicit AudioPlayer(Song& song)
-      : song_(song), remainingFrames_(song.totalFrames()) {
+      : song_(song),
+        remainingFrames_(song.infiniteLoops()
+                             ? std::numeric_limits<std::uint64_t>::max()
+                             : song.totalFrames()),
+        infinite_(song.infiniteLoops()) {
     AudioStreamBasicDescription format{};
     format.mSampleRate = song.rate();
     format.mFormatID = kAudioFormatLinearPCM;
@@ -719,18 +743,23 @@ class AudioPlayer {
   }
 
   void fillAndEnqueue(AudioQueueBufferRef buffer) noexcept {
-    const std::uint32_t frames = static_cast<std::uint32_t>(
-        std::min<std::uint64_t>(kFramesPerBuffer, remainingFrames_));
-    if (frames == 0) {
-      reachedEnd_ = true;
-      return;
+    std::uint32_t frames = kFramesPerBuffer;
+    if (!infinite_) {
+      frames = static_cast<std::uint32_t>(
+          std::min<std::uint64_t>(kFramesPerBuffer, remainingFrames_));
+      if (frames == 0) {
+        reachedEnd_ = true;
+        return;
+      }
     }
     const int hasMore = song_.render(
         static_cast<std::int16_t*>(buffer->mAudioData), static_cast<int>(frames));
     buffer->mAudioDataByteSize =
         frames * song_.channels() * sizeof(std::int16_t);
-    remainingFrames_ -= frames;
-    reachedEnd_ = !hasMore || remainingFrames_ == 0;
+    if (!infinite_) {
+      remainingFrames_ -= frames;
+    }
+    reachedEnd_ = !hasMore || (!infinite_ && remainingFrames_ == 0);
     if (AudioQueueEnqueueBuffer(queue_, buffer, 0, nullptr) == noErr) {
       ++buffersInFlight_;
     } else {
@@ -747,13 +776,16 @@ class AudioPlayer {
   int buffersInFlight_ = 0;
   bool reachedEnd_ = false;
   bool prepared_ = false;
+  bool infinite_ = false;
 };
 
 void printSongInfo(const Song& song, const Options& options) {
   const std::string title = song.title();
   std::cout << "Title: " << (title.empty() ? "(untitled)" : title) << '\n'
             << "Duration: " << formatDuration(song.duration()) << " ("
-            << song.duration() << " seconds)\n"
+            << song.duration() << " seconds)"
+            << (options.loops == 0 ? " per loop cycle; loops forever" : "")
+            << '\n'
             << "Tracks: " << song.tracks() << " (8 FM";
   if (song.tracks() > 8) {
     std::cout << ", " << song.tracks() - 8 << " PCM";
@@ -939,7 +971,9 @@ int processMdr(const Options& options) {
   const std::string title = shiftJisToUtf8(mdr.title.c_str());
   const mpxadrv::MidiSequence sequence = mpxadrv::convertMadrvMidi(
       mdr.data.data(), mdr.data.size(), mdr.trackOffsets.data(),
-      mpxadrv::MdrFile::kTrackCount, options.loops);
+      mpxadrv::MdrFile::kTrackCount, expansionLoops(options));
+  const bool loopForever = infinitePlayback(options) && sequence.hasSongLoop;
+  const bool infoLoopsForever = options.loops == 0 && sequence.hasSongLoop;
   const std::uint64_t durationUs =
       mpxadrv::midiDurationMicroseconds(sequence);
   const int durationSeconds = static_cast<int>(std::min<std::uint64_t>(
@@ -950,7 +984,9 @@ int processMdr(const Options& options) {
     std::cout << "Title: " << (title.empty() ? "(untitled)" : title) << '\n'
               << "Format: MADRV MDR (32-track EX-MDR)\n"
               << "Duration: " << formatDuration(durationSeconds) << " ("
-              << durationSeconds << " seconds)\n"
+              << durationSeconds << " seconds)"
+              << (infoLoopsForever ? " per loop cycle; loops forever" : "")
+              << '\n'
               << "Tracks: " << mpxadrv::MdrFile::kTrackCount << " capacity, "
               << mdr.activeTracks << " active\n"
               << "MIDI tracks: " << sequence.tracks.size() << '\n';
@@ -967,7 +1003,7 @@ int processMdr(const Options& options) {
     }
     if (sequence.tracks.empty()) {
       std::cout << "Playback: FM/PCM compatibility path\n";
-    } else if (mdr.activeTracks > static_cast<int>(sequence.tracks.size())) {
+    } else if (mpxadrv::countSeparableHardwareTracks(mdr) > 0) {
       std::cout << "Playback: synchronized MIDI + FM/PCM hybrid\n";
     } else {
       std::cout << "Playback: macOS software MIDI synthesizer";
@@ -1009,7 +1045,7 @@ int processMdr(const Options& options) {
   }
 
   if (options.command == "play" && !sequence.tracks.empty() &&
-      mdr.activeTracks > static_cast<int>(sequence.tracks.size())) {
+      mpxadrv::countSeparableHardwareTracks(mdr) > 0) {
     try {
       const std::vector<std::uint8_t> mdx =
           mpxadrv::makeMdxHardwareCompatible(mdr,
@@ -1034,7 +1070,9 @@ int processMdr(const Options& options) {
                 << "Playing MDR MIDI + FM/PCM... press Ctrl-C to stop.\n";
 
       mpxadrv::SoftwareSynthPlayer midiPlayer(soundFont);
-      midiPlayer.prepare(sequence);
+      // Match mdxmini's per-tick sample truncation so MIDI does not creep
+      // ahead of FM/PCM over a multi-minute hybrid song.
+      midiPlayer.prepare(sequence, loopForever, hardwareSong.rate());
       AudioPlayer player(hardwareSong);
       player.prepare();
       std::atomic<bool> hybridStop{false};
@@ -1044,7 +1082,8 @@ int processMdr(const Options& options) {
       std::thread midiThread([&] {
         try {
           midiPlayer.playPreparedAt(
-              [&] { return gInterrupted != 0 || hybridStop.load(); }, start);
+              [&] { return gInterrupted != 0 || hybridStop.load(); },
+              start - midiPlayer.latencyCompensation());
         } catch (...) {
           midiFailure = std::current_exception();
           hybridStop.store(true);
@@ -1088,7 +1127,7 @@ int processMdr(const Options& options) {
   if (options.command == "midi-play") {
     std::cout << "Sending MDR MIDI... press Ctrl-C to stop.\n";
     mpxadrv::playMidiSequence(sequence, options.midiDestination,
-                              [] { return gInterrupted != 0; });
+                              [] { return gInterrupted != 0; }, loopForever);
     std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
     return 0;
   }
@@ -1096,11 +1135,12 @@ int processMdr(const Options& options) {
   const fs::path soundFont = checkedSoundFont(options.soundFont);
   std::cout << (title.empty() ? input.filename().string() : title) << "  ["
             << formatDuration(durationSeconds) << "]\n"
-            << "Playing MDR MIDI with the macOS "
-            << (soundFont.empty() ? "DLSMusicDevice" : "AUMIDISynth")
+            << "Playing MDR MIDI with the "
+            << (soundFont.empty() ? "macOS DLSMusicDevice"
+                                  : "FluidSynth SoundFont")
             << "... press Ctrl-C to stop.\n";
   mpxadrv::playSoftwareSynth(sequence, soundFont,
-                             [] { return gInterrupted != 0; });
+                             [] { return gInterrupted != 0; }, loopForever);
   std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
   return 0;
 }
@@ -1157,7 +1197,7 @@ int main(int argc, char* argv[]) {
     if (options.command == "midi") {
       const mpxadrv::MidiSequence sequence = mpxadrv::convertMadrvMidi(
           song.mdxData(), song.mdxLength(), song.trackOffsets(),
-          song.mdxTrackCount(), options.loops);
+          song.mdxTrackCount(), expansionLoops(options));
       mpxadrv::writeStandardMidi(sequence, options.output, song.title());
       for (const std::string& warning : sequence.warnings) {
         std::cerr << "mpxadrv: MIDI warning: " << warning << '\n';
@@ -1172,19 +1212,22 @@ int main(int argc, char* argv[]) {
       const fs::path soundFont = checkedSoundFont(options.soundFont);
       const mpxadrv::MidiSequence sequence = mpxadrv::convertMadrvMidi(
           song.mdxData(), song.mdxLength(), song.trackOffsets(),
-          song.mdxTrackCount(), options.loops);
+          song.mdxTrackCount(), expansionLoops(options));
       for (const std::string& warning : sequence.warnings) {
         std::cerr << "mpxadrv: MIDI warning: " << warning << '\n';
       }
       if (sequence.tracks.empty()) {
         throw CliError("the song contains no convertible MIDI events");
       }
-      std::cout << "Playing with the macOS "
-                << (soundFont.empty() ? "DLSMusicDevice"
-                                      : "AUMIDISynth")
+      const bool loopForever =
+          infinitePlayback(options) && sequence.hasSongLoop;
+      std::cout << "Playing with the "
+                << (soundFont.empty() ? "macOS DLSMusicDevice"
+                                      : "FluidSynth SoundFont")
                 << "... press Ctrl-C to stop.\n";
       mpxadrv::playSoftwareSynth(sequence, soundFont,
-                                 [] { return gInterrupted != 0; });
+                                 [] { return gInterrupted != 0; },
+                                 loopForever);
       std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
       return 0;
     }
@@ -1192,16 +1235,19 @@ int main(int argc, char* argv[]) {
     if (options.command == "midi-play") {
       const mpxadrv::MidiSequence sequence = mpxadrv::convertMadrvMidi(
           song.mdxData(), song.mdxLength(), song.trackOffsets(),
-          song.mdxTrackCount(), options.loops);
+          song.mdxTrackCount(), expansionLoops(options));
       for (const std::string& warning : sequence.warnings) {
         std::cerr << "mpxadrv: MIDI warning: " << warning << '\n';
       }
       if (sequence.tracks.empty()) {
         throw CliError("the song contains no convertible MIDI events");
       }
+      const bool loopForever =
+          infinitePlayback(options) && sequence.hasSongLoop;
       std::cout << "Sending MIDI... press Ctrl-C to stop.\n";
       mpxadrv::playMidiSequence(sequence, options.midiDestination,
-                                [] { return gInterrupted != 0; });
+                                [] { return gInterrupted != 0; },
+                                loopForever);
       std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
       return 0;
     }

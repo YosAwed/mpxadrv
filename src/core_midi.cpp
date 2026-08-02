@@ -167,7 +167,7 @@ std::vector<std::string> midiDestinationNames() {
 
 void playMidiSequence(const MidiSequence& sequence,
                       const std::string& destinationSelector,
-                      const std::function<bool()>& shouldStop) {
+                      const std::function<bool()>& shouldStop, bool infinite) {
   if (destinationSelector.empty()) {
     throw MidiError("midi-play requires --destination <index-or-name>");
   }
@@ -181,21 +181,19 @@ void playMidiSequence(const MidiSequence& sequence,
               "MIDIOutputPortCreate");
 
   const std::vector<ScheduledMidiEvent> events = scheduleMidiEvents(sequence);
+  const bool loopForever = infinite && sequence.hasSongLoop;
+  const std::uint64_t loopStartUs =
+      loopForever ? midiTickMicroseconds(sequence, sequence.loopStartTick)
+                  : std::numeric_limits<std::uint64_t>::max();
 
   const auto start = std::chrono::steady_clock::now() +
                      std::chrono::milliseconds(100);
   try {
-    for (const ScheduledMidiEvent& event : events) {
-      if (shouldStop && shouldStop()) {
-        break;
-      }
-      std::this_thread::sleep_until(start +
-                                    std::chrono::microseconds(event.microseconds));
-      if (shouldStop && shouldStop()) {
-        break;
-      }
-      sendMessage(handles.port, destination, event.bytes);
-    }
+    playScheduledMidiEvents(
+        events, loopStartUs, loopForever, start, shouldStop,
+        [&](const std::vector<std::uint8_t>& bytes) {
+          sendMessage(handles.port, destination, bytes);
+        });
   } catch (...) {
     allNotesOff(handles.port, destination);
     throw;

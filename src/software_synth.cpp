@@ -4,6 +4,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <fluidsynth.h>
 
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <cstdint>
@@ -14,6 +15,17 @@
 
 namespace mpxadrv {
 namespace {
+
+constexpr int kRhythmChannel = 9;  // MIDI channel 10
+
+// The lightweight SC-55 SF2's drum kits sit quieter than its melodic presets,
+// especially under hybrid FM+MIDI mixes. Lift rhythm note-ons modestly.
+int boostRhythmVelocity(int velocity) {
+  if (velocity <= 0) {
+    return velocity;
+  }
+  return std::min(127, (velocity * 3 + 1) / 2);  // 1.5x, capped
+}
 
 std::string audioUnitError(OSStatus status) {
   char code[5] = {};
@@ -119,6 +131,55 @@ class SoftwareSynthGraph {
     }
     const std::uint8_t data1 = message.size() > 1 ? message[1] : 0;
     const std::uint8_t data2 = message.size() > 2 ? message[2] : 0;
+    const int channel = status & 0x0f;
+    if ((status & 0xf0) == 0xb0 && data1 == 0) {
+      bankMsb_[channel] = data2;
+      // Channel 10 is the GS rhythm part; bank selects must not move it onto
+      // a melodic bank or drum notes play as piano pitches.
+      if (channel == kRhythmChannel) {
+        return;
+      }
+      int outBank = 0;
+      int outProgram = 0;
+      resolveSoftwareSynthPreset(data2, 0, outBank, outProgram);
+      if (outBank != data2) {
+        // CM-64/MT-32 maps are missing from the built-in GM bank; keep the
+        // logical bank for later program changes and send a GS capital bank.
+        requireAudioUnit(
+            MusicDeviceMIDIEvent(synth_, status, 0, outBank, 0),
+            "MusicDeviceMIDIEvent");
+        return;
+      }
+    }
+    if ((status & 0xf0) == 0xc0) {
+      if (channel == kRhythmChannel) {
+        requireAudioUnit(
+            MusicDeviceMIDIEvent(synth_, status, resolveRhythmProgram(data1),
+                                 0, 0),
+            "MusicDeviceMIDIEvent");
+        return;
+      }
+      int outBank = 0;
+      int outProgram = 0;
+      resolveSoftwareSynthPreset(bankMsb_[channel], data1, outBank,
+                                 outProgram);
+      if (outBank != bankMsb_[channel] || outProgram != data1) {
+        requireAudioUnit(
+            MusicDeviceMIDIEvent(synth_, 0xb0 | channel, 0, outBank, 0),
+            "MusicDeviceMIDIEvent");
+      }
+      requireAudioUnit(
+          MusicDeviceMIDIEvent(synth_, status, outProgram, 0, 0),
+          "MusicDeviceMIDIEvent");
+      return;
+    }
+    if ((status & 0xf0) == 0x90 && channel == kRhythmChannel && data2 > 0) {
+      requireAudioUnit(
+          MusicDeviceMIDIEvent(synth_, status, data1,
+                               boostRhythmVelocity(data2), 0),
+          "MusicDeviceMIDIEvent");
+      return;
+    }
     requireAudioUnit(MusicDeviceMIDIEvent(synth_, status, data1, data2, 0),
                      "MusicDeviceMIDIEvent");
   }
@@ -136,6 +197,7 @@ class SoftwareSynthGraph {
   AUNode outputNode_ = 0;
   AudioUnit synth_ = nullptr;
   bool started_ = false;
+  std::array<int, 16> bankMsb_{};
 };
 
 class FluidSynthGraph {
@@ -147,6 +209,12 @@ class FluidSynthGraph {
     }
     try {
       fluid_settings_setstr(settings_, "audio.driver", "coreaudio");
+      // Retain enough buffering for dense arrangements. Hybrid playback
+      // compensates for this known queue depth by sending MIDI ahead of the
+      // FM/PCM AudioQueue instead of risking underruns with a tiny buffer.
+      fluid_settings_setint(settings_, "audio.period-size", 64);
+      fluid_settings_setint(settings_, "audio.periods", 16);
+      fluid_settings_setint(settings_, "synth.polyphony", 512);
       fluid_settings_setnum(settings_, "synth.sample-rate", 48000.0);
       fluid_settings_setnum(settings_, "synth.gain", 0.5);
       synth_ = new_fluid_synth(settings_);
@@ -157,6 +225,10 @@ class FluidSynthGraph {
         throw MidiError("FluidSynth could not load SoundFont: " +
                         soundFont.string());
       }
+      // Full channel volume on the rhythm part; SF2 kits are still soft, so
+      // note-ons are additionally boosted in send().
+      fluid_synth_cc(synth_, kRhythmChannel, 7, 127);
+      fluid_synth_cc(synth_, kRhythmChannel, 11, 127);
       driver_ = new_fluid_audio_driver(settings_, synth_);
       if (driver_ == nullptr) {
         throw MidiError("FluidSynth could not open the Core Audio output");
@@ -200,6 +272,9 @@ class FluidSynthGraph {
       case 0x90:
         if (data2 == 0) {
           fluid_synth_noteoff(synth_, channel, data1);
+        } else if (channel == kRhythmChannel) {
+          fluid_synth_noteon(synth_, channel, data1,
+                             boostRhythmVelocity(data2));
         } else {
           fluid_synth_noteon(synth_, channel, data1, data2);
         }
@@ -208,11 +283,37 @@ class FluidSynthGraph {
         fluid_synth_key_pressure(synth_, channel, data1, data2);
         break;
       case 0xb0:
+        if (data1 == 0) {
+          bankMsb_[channel] = data2;
+          // Keep MIDI channel 10 as FluidSynth's drum channel. Selecting a
+          // melodic bank here turns kit notes into piano pitches.
+          if (channel == kRhythmChannel) {
+            break;
+          }
+          int outBank = 0;
+          int outProgram = 0;
+          resolveSoftwareSynthPreset(data2, 0, outBank, outProgram);
+          // Keep CM-64/MT-32 maps logical, but ask FluidSynth for a bank the
+          // SoundFont actually contains to avoid substitution warnings.
+          fluid_synth_cc(synth_, channel, 0, outBank);
+          break;
+        }
         fluid_synth_cc(synth_, channel, data1, data2);
         break;
-      case 0xc0:
-        fluid_synth_program_change(synth_, channel, data1);
+      case 0xc0: {
+        if (channel == kRhythmChannel) {
+          fluid_synth_program_change(synth_, channel,
+                                     resolveRhythmProgram(data1));
+          break;
+        }
+        int outBank = 0;
+        int outProgram = 0;
+        resolveSoftwareSynthPreset(bankMsb_[channel], data1, outBank,
+                                   outProgram);
+        fluid_synth_bank_select(synth_, channel, outBank);
+        fluid_synth_program_change(synth_, channel, outProgram);
         break;
+      }
       case 0xd0:
         fluid_synth_channel_pressure(synth_, channel, data1);
         break;
@@ -250,6 +351,7 @@ class FluidSynthGraph {
   fluid_settings_t* settings_ = nullptr;
   fluid_synth_t* synth_ = nullptr;
   fluid_audio_driver_t* driver_ = nullptr;
+  std::array<int, 16> bankMsb_{};
 };
 
 }  // namespace
@@ -283,6 +385,8 @@ class SoftwareSynthPlayer::Impl {
   std::unique_ptr<SoftwareSynthGraph> apple;
   std::unique_ptr<FluidSynthGraph> fluid;
   std::vector<ScheduledMidiEvent> events;
+  std::uint64_t loopStartUs = std::numeric_limits<std::uint64_t>::max();
+  bool infinite = false;
 };
 
 SoftwareSynthPlayer::SoftwareSynthPlayer(
@@ -291,17 +395,34 @@ SoftwareSynthPlayer::SoftwareSynthPlayer(
 
 SoftwareSynthPlayer::~SoftwareSynthPlayer() = default;
 
-void SoftwareSynthPlayer::prepare(const MidiSequence& sequence) {
-  impl_->events = scheduleMidiEvents(sequence);
+std::chrono::microseconds SoftwareSynthPlayer::latencyCompensation() const {
+  // FluidSynth's Core Audio driver queues 64 frames in each of 16 periods at
+  // 48 kHz. Core Audio begins consuming the queue while it is primed, and in
+  // hybrid playback a full 14-period lead made MIDI audibly early against the
+  // FM/PCM AudioQueue — use ten periods (~13.3 ms) instead.
+  return impl_->fluid ? std::chrono::microseconds(13'333)
+                      : std::chrono::microseconds(0);
+}
+
+void SoftwareSynthPlayer::prepare(const MidiSequence& sequence, bool infinite,
+                                  int syncSampleRate) {
+  impl_->events = scheduleMidiEvents(sequence, syncSampleRate);
   if (impl_->events.empty()) {
     throw MidiError("the song contains no events for the software synthesizer");
   }
+  impl_->infinite = infinite && sequence.hasSongLoop;
+  impl_->loopStartUs =
+      impl_->infinite
+          ? midiTickMicroseconds(sequence, sequence.loopStartTick,
+                                 syncSampleRate)
+          : std::numeric_limits<std::uint64_t>::max();
 }
 
 void SoftwareSynthPlayer::playAt(
     const MidiSequence& sequence, const std::function<bool()>& shouldStop,
-    std::chrono::steady_clock::time_point start) {
-  prepare(sequence);
+    std::chrono::steady_clock::time_point start, bool infinite,
+    int syncSampleRate) {
+  prepare(sequence, infinite, syncSampleRate);
   playPreparedAt(shouldStop, start);
 }
 
@@ -309,20 +430,9 @@ void SoftwareSynthPlayer::playPreparedAt(
     const std::function<bool()>& shouldStop,
     std::chrono::steady_clock::time_point start) {
   try {
-    for (const ScheduledMidiEvent& event : impl_->events) {
-      if (shouldStop && shouldStop()) {
-        break;
-      }
-      std::this_thread::sleep_until(
-          start + std::chrono::microseconds(event.microseconds));
-      if (shouldStop && shouldStop()) {
-        break;
-      }
-      impl_->send(event.bytes);
-    }
-    if (!(shouldStop && shouldStop())) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(750));
-    }
+    playScheduledMidiEvents(
+        impl_->events, impl_->loopStartUs, impl_->infinite, start, shouldStop,
+        [&](const std::vector<std::uint8_t>& bytes) { impl_->send(bytes); });
   } catch (...) {
     impl_->allNotesOff();
     throw;
@@ -332,9 +442,9 @@ void SoftwareSynthPlayer::playPreparedAt(
 
 void playSoftwareSynth(const MidiSequence& sequence,
                        const std::filesystem::path& soundFont,
-                       const std::function<bool()>& shouldStop) {
+                       const std::function<bool()>& shouldStop, bool infinite) {
   SoftwareSynthPlayer player(soundFont);
-  player.prepare(sequence);
+  player.prepare(sequence, infinite);
   player.playPreparedAt(shouldStop, std::chrono::steady_clock::now() +
                                         std::chrono::milliseconds(100));
 }
@@ -342,9 +452,9 @@ void playSoftwareSynth(const MidiSequence& sequence,
 void playSoftwareSynthAt(
     const MidiSequence& sequence, const std::filesystem::path& soundFont,
     const std::function<bool()>& shouldStop,
-    std::chrono::steady_clock::time_point start) {
+    std::chrono::steady_clock::time_point start, bool infinite) {
   SoftwareSynthPlayer player(soundFont);
-  player.playAt(sequence, shouldStop, start);
+  player.playAt(sequence, shouldStop, start, infinite);
 }
 
 }  // namespace mpxadrv
