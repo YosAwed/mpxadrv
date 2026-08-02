@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mpxadrv VERSION 0.6.0 LANGUAGES CXX)
+project(mpxadrv VERSION 0.6.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,7 +25,27 @@ if(NOT MDXMINI_INCLUDE_DIR OR NOT MDXMINI_LIBRARY)
     "mdxmini was not found. Install it with: brew install mdxmini")
 endif()
 
+find_path(FLUIDSYNTH_INCLUDE_DIR
+  NAMES fluidsynth.h
+  HINTS
+    /opt/homebrew/include
+    /usr/local/include
+)
+
+find_library(FLUIDSYNTH_LIBRARY
+  NAMES fluidsynth
+  HINTS
+    /opt/homebrew/lib
+    /usr/local/lib
+)
+
+if(NOT FLUIDSYNTH_INCLUDE_DIR OR NOT FLUIDSYNTH_LIBRARY)
+  message(FATAL_ERROR
+    "FluidSynth was not found. Install it with: brew install fluid-synth")
+endif()
+
 find_library(AUDIOTOOLBOX_FRAMEWORK AudioToolbox REQUIRED)
+find_library(COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
 find_library(COREMIDI_FRAMEWORK CoreMIDI REQUIRED)
 find_library(ICONV_LIBRARY iconv REQUIRED)
@@ -40,10 +60,15 @@ add_executable(mpxadrv
   src/tdx.cpp
 )
 
-target_include_directories(mpxadrv PRIVATE "${MDXMINI_INCLUDE_DIR}")
+target_include_directories(mpxadrv PRIVATE
+  "${MDXMINI_INCLUDE_DIR}"
+  "${FLUIDSYNTH_INCLUDE_DIR}"
+)
 target_link_libraries(mpxadrv PRIVATE
   "${MDXMINI_LIBRARY}"
+  "${FLUIDSYNTH_LIBRARY}"
   "${AUDIOTOOLBOX_FRAMEWORK}"
+  "${COREAUDIO_FRAMEWORK}"
   "${COREFOUNDATION_FRAMEWORK}"
   "${COREMIDI_FRAMEWORK}"
   "${ICONV_LIBRARY}"

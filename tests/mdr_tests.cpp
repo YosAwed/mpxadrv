@@ -38,17 +38,22 @@ int main() {
     const std::size_t table = bytes.size();
     bytes.resize(table + 66, 0);
     std::uint16_t offset = 66;
-    writeWord(bytes, table, static_cast<std::uint16_t>(66 + 4 + 31 * 2));
     for (int track = 0; track < mpxadrv::MdrFile::kTrackCount; ++track) {
       writeWord(bytes, table + 2 + track * 2, offset);
       if (track == 0) {
         bytes.insert(bytes.end(), {0xe0, 0xff, 0xf1, 0x00});
         offset += 4;
+      } else if (track == 16) {
+        bytes.insert(bytes.end(),
+                     {0xe0, 0x08, 0x08, 0xfb, 0x0c,
+                      0x80, 0x03, 0xf1, 0x00});
+        offset += 9;
       } else {
         bytes.insert(bytes.end(), {0xf1, 0x00});
         offset += 2;
       }
     }
+    writeWord(bytes, table, offset);
 
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output.write(reinterpret_cast<const char*>(bytes.data()),
@@ -60,9 +65,10 @@ int main() {
     require(mdr.pdxName == "BANK", "MDR PDX name is wrong");
     require(mdr.trackOffsets[0] == static_cast<int>(table + 66),
             "first MDR track offset is wrong");
-    require(mdr.trackOffsets[31] == static_cast<int>(table + 66 + 4 + 30 * 2),
+    require(mdr.trackOffsets[31] ==
+                static_cast<int>(table + 66 + 4 + 30 * 2 + 7),
             "last MDR track offset is wrong");
-    require(mdr.activeTracks == 0, "empty MDR tracks were reported active");
+    require(mdr.activeTracks == 1, "active MDR hardware track was not found");
     const std::vector<std::uint8_t> mdx = mpxadrv::makeMdxCompatible(mdr);
     require(mdx[table + 2] == 0x00 && mdx[table + 3] == 0x14,
             "converted MDX first-track offset is wrong");
@@ -73,6 +79,16 @@ int main() {
     require(mdxWithoutPdx[7] == 0 && mdxWithoutPdx[8] == 0x00 &&
                 mdxWithoutPdx[9] != 0,
             "converted MDX did not remove its PDX name");
+    const std::vector<std::uint8_t> hardwareMdx =
+        mpxadrv::makeMdxHardwareCompatible(
+            mdr, {0xff, 0xc8, 0x0f, 0xf1, 0x00});
+    const std::vector<std::uint8_t> neutralized = {
+        0xf3, 0x00, 0x00, 0xfb, 0x0c, 0x80, 0x03, 0xf1, 0x00,
+    };
+    require(std::search(hardwareMdx.begin(), hardwareMdx.end(),
+                        neutralized.begin(), neutralized.end()) !=
+                hardwareMdx.end(),
+            "MDR hardware track was not converted to MDX");
 
     bytes[table + 66] = 0xf1;
     std::ofstream invalid(path, std::ios::binary | std::ios::trunc);

@@ -2,6 +2,7 @@
 
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <fluidsynth.h>
 
 #include <chrono>
 #include <cstring>
@@ -137,21 +138,178 @@ class SoftwareSynthGraph {
   bool started_ = false;
 };
 
-}  // namespace
-
-void playSoftwareSynth(const MidiSequence& sequence,
-                       const std::filesystem::path& soundFont,
-                       const std::function<bool()>& shouldStop) {
-  const std::vector<ScheduledMidiEvent> events = scheduleMidiEvents(sequence);
-  if (events.empty()) {
-    throw MidiError("the song contains no events for the software synthesizer");
+class FluidSynthGraph {
+ public:
+  explicit FluidSynthGraph(const std::filesystem::path& soundFont) {
+    settings_ = new_fluid_settings();
+    if (settings_ == nullptr) {
+      throw MidiError("new_fluid_settings failed");
+    }
+    try {
+      fluid_settings_setstr(settings_, "audio.driver", "coreaudio");
+      fluid_settings_setnum(settings_, "synth.sample-rate", 48000.0);
+      fluid_settings_setnum(settings_, "synth.gain", 0.5);
+      synth_ = new_fluid_synth(settings_);
+      if (synth_ == nullptr) {
+        throw MidiError("new_fluid_synth failed");
+      }
+      if (fluid_synth_sfload(synth_, soundFont.string().c_str(), 1) < 0) {
+        throw MidiError("FluidSynth could not load SoundFont: " +
+                        soundFont.string());
+      }
+      driver_ = new_fluid_audio_driver(settings_, synth_);
+      if (driver_ == nullptr) {
+        throw MidiError("FluidSynth could not open the Core Audio output");
+      }
+    } catch (...) {
+      cleanup();
+      throw;
+    }
   }
 
-  SoftwareSynthGraph synth(soundFont);
-  const auto start = std::chrono::steady_clock::now() +
-                     std::chrono::milliseconds(100);
+  FluidSynthGraph(const FluidSynthGraph&) = delete;
+  FluidSynthGraph& operator=(const FluidSynthGraph&) = delete;
+
+  ~FluidSynthGraph() { cleanup(); }
+
+  void send(const std::vector<std::uint8_t>& message) {
+    if (message.empty()) {
+      return;
+    }
+    const int status = message[0];
+    if (status == 0xf0) {
+      if (message.size() <= 2) {
+        return;
+      }
+      const bool terminated = message.back() == 0xf7;
+      const int length = static_cast<int>(message.size()) -
+                         (terminated ? 2 : 1);
+      int handled = 0;
+      fluid_synth_sysex(
+          synth_, reinterpret_cast<const char*>(message.data() + 1), length,
+          nullptr, nullptr, &handled, 0);
+      return;
+    }
+    const int channel = status & 0x0f;
+    const int data1 = message.size() > 1 ? message[1] : 0;
+    const int data2 = message.size() > 2 ? message[2] : 0;
+    switch (status & 0xf0) {
+      case 0x80:
+        fluid_synth_noteoff(synth_, channel, data1);
+        break;
+      case 0x90:
+        if (data2 == 0) {
+          fluid_synth_noteoff(synth_, channel, data1);
+        } else {
+          fluid_synth_noteon(synth_, channel, data1, data2);
+        }
+        break;
+      case 0xa0:
+        fluid_synth_key_pressure(synth_, channel, data1, data2);
+        break;
+      case 0xb0:
+        fluid_synth_cc(synth_, channel, data1, data2);
+        break;
+      case 0xc0:
+        fluid_synth_program_change(synth_, channel, data1);
+        break;
+      case 0xd0:
+        fluid_synth_channel_pressure(synth_, channel, data1);
+        break;
+      case 0xe0:
+        fluid_synth_pitch_bend(synth_, channel, data1 | (data2 << 7));
+        break;
+      default:
+        break;
+    }
+  }
+
+  void allNotesOff() noexcept {
+    for (int channel = 0; channel < 16; ++channel) {
+      fluid_synth_cc(synth_, channel, 123, 0);
+      fluid_synth_cc(synth_, channel, 120, 0);
+    }
+  }
+
+ private:
+  void cleanup() noexcept {
+    if (driver_ != nullptr) {
+      delete_fluid_audio_driver(driver_);
+      driver_ = nullptr;
+    }
+    if (synth_ != nullptr) {
+      delete_fluid_synth(synth_);
+      synth_ = nullptr;
+    }
+    if (settings_ != nullptr) {
+      delete_fluid_settings(settings_);
+      settings_ = nullptr;
+    }
+  }
+
+  fluid_settings_t* settings_ = nullptr;
+  fluid_synth_t* synth_ = nullptr;
+  fluid_audio_driver_t* driver_ = nullptr;
+};
+
+}  // namespace
+
+class SoftwareSynthPlayer::Impl {
+ public:
+  explicit Impl(const std::filesystem::path& soundFont) {
+    if (soundFont.empty()) {
+      apple = std::make_unique<SoftwareSynthGraph>(soundFont);
+    } else {
+      fluid = std::make_unique<FluidSynthGraph>(soundFont);
+    }
+  }
+
+  void send(const std::vector<std::uint8_t>& message) {
+    if (fluid) {
+      fluid->send(message);
+    } else {
+      apple->send(message);
+    }
+  }
+
+  void allNotesOff() noexcept {
+    if (fluid) {
+      fluid->allNotesOff();
+    } else {
+      apple->allNotesOff();
+    }
+  }
+
+  std::unique_ptr<SoftwareSynthGraph> apple;
+  std::unique_ptr<FluidSynthGraph> fluid;
+  std::vector<ScheduledMidiEvent> events;
+};
+
+SoftwareSynthPlayer::SoftwareSynthPlayer(
+    const std::filesystem::path& soundFont)
+    : impl_(std::make_unique<Impl>(soundFont)) {}
+
+SoftwareSynthPlayer::~SoftwareSynthPlayer() = default;
+
+void SoftwareSynthPlayer::prepare(const MidiSequence& sequence) {
+  impl_->events = scheduleMidiEvents(sequence);
+  if (impl_->events.empty()) {
+    throw MidiError("the song contains no events for the software synthesizer");
+  }
+}
+
+void SoftwareSynthPlayer::playAt(
+    const MidiSequence& sequence, const std::function<bool()>& shouldStop,
+    std::chrono::steady_clock::time_point start) {
+  prepare(sequence);
+  playPreparedAt(shouldStop, start);
+}
+
+void SoftwareSynthPlayer::playPreparedAt(
+    const std::function<bool()>& shouldStop,
+    std::chrono::steady_clock::time_point start) {
   try {
-    for (const ScheduledMidiEvent& event : events) {
+    for (const ScheduledMidiEvent& event : impl_->events) {
       if (shouldStop && shouldStop()) {
         break;
       }
@@ -160,16 +318,33 @@ void playSoftwareSynth(const MidiSequence& sequence,
       if (shouldStop && shouldStop()) {
         break;
       }
-      synth.send(event.bytes);
+      impl_->send(event.bytes);
     }
     if (!(shouldStop && shouldStop())) {
       std::this_thread::sleep_for(std::chrono::milliseconds(750));
     }
   } catch (...) {
-    synth.allNotesOff();
+    impl_->allNotesOff();
     throw;
   }
-  synth.allNotesOff();
+  impl_->allNotesOff();
+}
+
+void playSoftwareSynth(const MidiSequence& sequence,
+                       const std::filesystem::path& soundFont,
+                       const std::function<bool()>& shouldStop) {
+  SoftwareSynthPlayer player(soundFont);
+  player.prepare(sequence);
+  player.playPreparedAt(shouldStop, std::chrono::steady_clock::now() +
+                                        std::chrono::milliseconds(100));
+}
+
+void playSoftwareSynthAt(
+    const MidiSequence& sequence, const std::filesystem::path& soundFont,
+    const std::function<bool()>& shouldStop,
+    std::chrono::steady_clock::time_point start) {
+  SoftwareSynthPlayer player(soundFont);
+  player.playAt(sequence, shouldStop, start);
 }
 
 }  // namespace mpxadrv
