@@ -1,0 +1,770 @@
+#include "midi.hpp"
+
+#include <algorithm>
+#include <array>
+#include <fstream>
+#include <limits>
+#include <sstream>
+#include <utility>
+
+namespace mpxadrv {
+namespace {
+
+constexpr std::array<std::uint8_t, 16> kVolumeTable = {
+    0x2a, 0x28, 0x25, 0x22, 0x20, 0x1d, 0x1a, 0x18,
+    0x15, 0x12, 0x10, 0x0d, 0x0a, 0x08, 0x05, 0x02,
+};
+
+std::int16_t readSignedWord(const std::vector<std::uint8_t>& data,
+                            std::size_t position) {
+  if (position + 2 > data.size()) {
+    throw MidiError("truncated signed offset in MDX track");
+  }
+  const std::uint16_t value =
+      static_cast<std::uint16_t>((data[position] << 8) | data[position + 1]);
+  return static_cast<std::int16_t>(value);
+}
+
+std::size_t checkedAdvance(std::size_t position, std::size_t count,
+                           std::size_t length) {
+  if (count > length - position) {
+    throw MidiError("truncated command in MDX track");
+  }
+  return position + count;
+}
+
+int midiMessageLength(std::uint8_t status) {
+  if (status < 0x80) {
+    return 0;
+  }
+  if (status < 0xf0) {
+    return (status & 0xe0) == 0xc0 ? 2 : 3;
+  }
+  switch (status) {
+    case 0xf1:
+    case 0xf3:
+      return 2;
+    case 0xf2:
+      return 3;
+    case 0xf6:
+    case 0xf8:
+    case 0xfa:
+    case 0xfb:
+    case 0xfc:
+    case 0xfe:
+    case 0xff:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+std::string hexByte(std::uint8_t value) {
+  constexpr char digits[] = "0123456789ABCDEF";
+  std::string result = "0x00";
+  result[2] = digits[value >> 4];
+  result[3] = digits[value & 0x0f];
+  return result;
+}
+
+struct TrackConverter {
+  explicit TrackConverter(MidiSequence& value) : sequence(value) {}
+
+  MidiSequence& sequence;
+  MidiTrack result;
+  std::vector<std::uint8_t> bytes;
+  std::size_t position = 0;
+  std::uint64_t tick = 0;
+  std::uint64_t order = 0;
+  int loopLimit = 1;
+  int songLoops = 0;
+  int channel = 0;
+  int gate = 8;
+  int nowVolume = 21;
+  int nowVolumeCommand = 8;
+  int velocityLevel = 0;
+  int velocityCommand = 0;
+  bool midi = false;
+  bool emitted = false;
+  bool stopped = false;
+  bool warnedE2 = false;
+  std::vector<std::pair<int, int>> polyNotes;
+
+  void warning(const std::string& message) {
+    std::ostringstream text;
+    text << "track " << result.sourceTrack + 1 << ": " << message;
+    sequence.warnings.push_back(text.str());
+  }
+
+  void event(std::vector<std::uint8_t> message, std::uint64_t at) {
+    if (!midi || message.empty()) {
+      return;
+    }
+    result.events.push_back({at, std::move(message), order++});
+    emitted = true;
+  }
+
+  void rawEvent(std::vector<std::uint8_t> message, std::uint64_t at) {
+    if (message.empty()) {
+      return;
+    }
+    result.events.push_back({at, std::move(message), order++});
+    emitted = true;
+  }
+
+  void channelEvent(std::uint8_t status, std::uint8_t first,
+                    std::uint8_t second) {
+    event({static_cast<std::uint8_t>(status | channel), first, second}, tick);
+  }
+
+  void control(std::uint8_t controller, std::uint8_t value) {
+    channelEvent(0xb0, controller, static_cast<std::uint8_t>(value & 0x7f));
+  }
+
+  int noteVelocity() const { return (~nowVolume) & 0x7f; }
+
+  int gateTicks(int duration) const {
+    const int encoded = duration - 1;
+    if (gate <= 8) {
+      return (encoded * gate) / 8 + 1;
+    }
+    return std::max(1, duration + gate - 256);
+  }
+
+  void note(int key, int duration) {
+    if (midi) {
+      const int off = gateTicks(duration);
+      for (const auto& poly : polyNotes) {
+        event({static_cast<std::uint8_t>(0x90 | channel),
+               static_cast<std::uint8_t>(poly.first & 0x7f),
+               static_cast<std::uint8_t>(poly.second & 0x7f)},
+              tick);
+        event({static_cast<std::uint8_t>(0x80 | channel),
+               static_cast<std::uint8_t>(poly.first & 0x7f), 0},
+              tick + static_cast<std::uint64_t>(off));
+      }
+      polyNotes.clear();
+      event({static_cast<std::uint8_t>(0x90 | channel),
+             static_cast<std::uint8_t>(key & 0x7f),
+             static_cast<std::uint8_t>(noteVelocity())},
+            tick);
+      event({static_cast<std::uint8_t>(0x80 | channel),
+             static_cast<std::uint8_t>(key & 0x7f), 0},
+            tick + static_cast<std::uint64_t>(off));
+    }
+    tick += static_cast<std::uint64_t>(duration);
+  }
+
+  void directMidi(std::size_t start, std::size_t count) {
+    const std::size_t end = checkedAdvance(start, count, bytes.size());
+    std::size_t cursor = start;
+    std::uint8_t runningStatus = 0;
+    while (cursor < end) {
+      std::uint8_t status = bytes[cursor];
+      if (status < 0x80) {
+        if (runningStatus == 0) {
+          warning("direct MIDI data starts without a status byte");
+          return;
+        }
+        status = runningStatus;
+      } else {
+        ++cursor;
+        if (status < 0xf0) {
+          runningStatus = status;
+        } else {
+          runningStatus = 0;
+        }
+      }
+
+      if (status == 0xf0) {
+        std::vector<std::uint8_t> sysex = {0xf0};
+        while (cursor < end) {
+          const std::uint8_t value = bytes[cursor++];
+          sysex.push_back(value);
+          if (value == 0xf7) {
+            break;
+          }
+        }
+        if (sysex.back() != 0xf7) {
+          warning("unterminated SysEx in E0 direct-output command");
+          sysex.push_back(0xf7);
+        }
+        rawEvent(std::move(sysex), tick);
+        continue;
+      }
+
+      const int messageLength = midiMessageLength(status);
+      if (messageLength == 0) {
+        warning("unsupported direct MIDI status " + hexByte(status));
+        return;
+      }
+      std::vector<std::uint8_t> message = {status};
+      while (message.size() < static_cast<std::size_t>(messageLength)) {
+        if (cursor >= end || bytes[cursor] >= 0x80) {
+          warning("truncated direct MIDI message " + hexByte(status));
+          return;
+        }
+        message.push_back(bytes[cursor++]);
+      }
+      if (status == 0xff) {
+        warning("MIDI System Reset cannot be represented in an SMF and was omitted");
+      } else {
+        rawEvent(std::move(message), tick);
+      }
+    }
+  }
+
+  void extendedE0() {
+    position = checkedAdvance(position, 1, bytes.size());
+    const std::uint8_t subcommand = bytes[position - 1];
+    if (subcommand == 0xff) {
+      return;
+    }
+    if (subcommand > 0x1c) {
+      warning("unknown E0 subcommand " + hexByte(subcommand));
+      stopped = true;
+      return;
+    }
+
+    if (subcommand == 0x00) {
+      position = checkedAdvance(position, 1, bytes.size());
+      if ((bytes[position - 1] & 0x80) == 0) {
+        position = checkedAdvance(position, 4, bytes.size());
+      }
+      return;
+    }
+    if (subcommand == 0x0e) {
+      position = checkedAdvance(position, 1, bytes.size());
+      const std::size_t count = static_cast<std::size_t>(bytes[position - 1]) + 1;
+      directMidi(position, count);
+      position = checkedAdvance(position, count, bytes.size());
+      return;
+    }
+
+    static constexpr std::array<int, 29> parameterCounts = {
+        0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0,
+        2, 1, 0, 0, 1, 1, 3, 3, 4, 4, 1, 1, 1, 1,
+    };
+    const int count = parameterCounts[subcommand];
+    const std::size_t parameters = position;
+    position = checkedAdvance(position, static_cast<std::size_t>(count),
+                              bytes.size());
+
+    switch (subcommand) {
+      case 0x08:
+        channel = bytes[parameters] & 0x0f;
+        midi = (bytes[parameters] & 0x80) != 0;
+        break;
+      case 0x09:
+        if (midi) {
+          control(100, 0);
+          control(101, 0);
+          control(6, bytes[parameters]);
+        }
+        break;
+      case 0x0a:
+        if ((velocityCommand & 0x80) == 0) {
+          if (velocityCommand < 15) {
+            ++velocityCommand;
+            velocityLevel = kVolumeTable[velocityCommand] * 2;
+          }
+        } else if (velocityCommand > 0x80) {
+          --velocityCommand;
+          velocityLevel = velocityCommand & 0x7f;
+        }
+        control(7, static_cast<std::uint8_t>((~velocityLevel) & 0x7f));
+        break;
+      case 0x0b:
+        if ((velocityCommand & 0x80) == 0) {
+          if (velocityCommand > 0) {
+            --velocityCommand;
+            velocityLevel = kVolumeTable[velocityCommand] * 2;
+          }
+        } else if (velocityCommand < 0xff) {
+          ++velocityCommand;
+          velocityLevel = velocityCommand & 0x7f;
+        }
+        control(7, static_cast<std::uint8_t>((~velocityLevel) & 0x7f));
+        break;
+      case 0x0c:
+        velocityCommand = bytes[parameters];
+        velocityLevel = (velocityCommand & 0x80) != 0
+                            ? velocityCommand & 0x7f
+                            : kVolumeTable[velocityCommand & 0x0f] * 2;
+        control(7, static_cast<std::uint8_t>((~velocityLevel) & 0x7f));
+        break;
+      case 0x15:
+      case 0x16:
+        control(subcommand == 0x15 ? 99 : 101, bytes[parameters]);
+        control(subcommand == 0x15 ? 98 : 100, bytes[parameters + 1]);
+        control(6, bytes[parameters + 2]);
+        break;
+      case 0x17:
+      case 0x18:
+        control(subcommand == 0x17 ? 99 : 101, bytes[parameters]);
+        control(subcommand == 0x17 ? 98 : 100, bytes[parameters + 1]);
+        control(6, bytes[parameters + 2]);
+        control(6, bytes[parameters + 3]);
+        break;
+      default:
+        break;
+    }
+  }
+
+  void standardVolume(std::uint8_t command) {
+    nowVolumeCommand = command;
+    nowVolume = (command & 0x80) != 0
+                    ? command & 0x7f
+                    : kVolumeTable[command & 0x0f] * (midi ? 2 : 1);
+  }
+
+  void run() {
+    constexpr std::uint64_t kMaximumCommands = 10'000'000;
+    std::uint64_t commandCount = 0;
+    while (!stopped && position < bytes.size()) {
+      if (++commandCount > kMaximumCommands) {
+        throw MidiError("MDX track exceeded the command safety limit");
+      }
+      const std::size_t commandPosition = position;
+      const std::uint8_t command = bytes[position++];
+
+      const int noteMinimum = midi ? 0x60 : 0x80;
+      if (command < noteMinimum) {
+        tick += static_cast<std::uint64_t>(command) + 1;
+        continue;
+      }
+      if (command <= 0xdf) {
+        position = checkedAdvance(position, 1, bytes.size());
+        note(command - noteMinimum, static_cast<int>(bytes[position - 1]) + 1);
+        continue;
+      }
+
+      switch (command) {
+        case 0xe0:
+          extendedE0();
+          break;
+        case 0xe1:
+          if (!midi) {
+            warning("E1 polyphonic note appeared outside MIDI mode; track stopped safely");
+            stopped = true;
+            break;
+          }
+          position = checkedAdvance(position, 1, bytes.size());
+          if (polyNotes.size() < 16) {
+            polyNotes.emplace_back(bytes[position - 1] & 0x7f, noteVelocity());
+          }
+          break;
+        case 0xe2:
+          if (!warnedE2) {
+            warning("E2 model-specific SysEx is not converted yet; track stopped safely");
+            warnedE2 = true;
+          }
+          stopped = true;
+          break;
+        case 0xe3:
+        case 0xe4:
+        case 0xe5:
+        case 0xe6:
+          warning("unsupported MADRV command " + hexByte(command) +
+                  "; track stopped safely");
+          stopped = true;
+          break;
+        case 0xe7:
+          position = checkedAdvance(position, 1, bytes.size());
+          if (bytes[position - 1] == 1) {
+            position = checkedAdvance(position, 1, bytes.size());
+          } else if (bytes[position - 1] >= 2) {
+            stopped = true;
+          }
+          break;
+        case 0xe8:
+        case 0xee:
+          break;
+        case 0xea:
+        case 0xeb:
+        case 0xec:
+          position = checkedAdvance(position, 1, bytes.size());
+          if ((bytes[position - 1] & 0x80) == 0) {
+            position = checkedAdvance(position, 4, bytes.size());
+          }
+          break;
+        case 0xe9:
+        case 0xed:
+        case 0xef:
+        case 0xf0:
+          position = checkedAdvance(position, 1, bytes.size());
+          break;
+        case 0xf1: {
+          position = checkedAdvance(position, 2, bytes.size());
+          const std::int16_t offset = readSignedWord(bytes, commandPosition + 1);
+          if (offset == 0 || ++songLoops >= loopLimit) {
+            stopped = true;
+          } else {
+            const std::int64_t target = static_cast<std::int64_t>(position) + offset;
+            if (target < 0 || target >= static_cast<std::int64_t>(bytes.size())) {
+              throw MidiError("song-loop offset leaves MDX data");
+            }
+            position = static_cast<std::size_t>(target);
+          }
+          break;
+        }
+        case 0xf2:
+        case 0xf3:
+          position = checkedAdvance(position, 2, bytes.size());
+          break;
+        case 0xf4: {
+          position = checkedAdvance(position, 2, bytes.size());
+          const std::int16_t outer = readSignedWord(bytes, commandPosition + 1);
+          const std::int64_t nested = static_cast<std::int64_t>(position) + outer;
+          if (nested < 0 || nested + 2 > static_cast<std::int64_t>(bytes.size())) {
+            throw MidiError("repeat-break offset leaves MDX data");
+          }
+          const std::size_t nestedPosition = static_cast<std::size_t>(nested);
+          const std::int16_t inner = readSignedWord(bytes, nestedPosition);
+          const std::int64_t counter = nested + 1 + inner;
+          if (counter < 0 || counter >= static_cast<std::int64_t>(bytes.size())) {
+            throw MidiError("repeat-break counter leaves MDX data");
+          }
+          if (bytes[static_cast<std::size_t>(counter)] == 1) {
+            position = nestedPosition + 2;
+          }
+          break;
+        }
+        case 0xf5: {
+          position = checkedAdvance(position, 2, bytes.size());
+          const std::int16_t offset = readSignedWord(bytes, commandPosition + 1);
+          const std::int64_t counter =
+              static_cast<std::int64_t>(position) + offset - 1;
+          if (counter < 0 || counter >= static_cast<std::int64_t>(bytes.size())) {
+            throw MidiError("repeat counter leaves MDX data");
+          }
+          std::uint8_t& value = bytes[static_cast<std::size_t>(counter)];
+          --value;
+          if (value != 0) {
+            const std::int64_t target = static_cast<std::int64_t>(position) + offset;
+            if (target < 0 || target >= static_cast<std::int64_t>(bytes.size())) {
+              throw MidiError("repeat offset leaves MDX data");
+            }
+            position = static_cast<std::size_t>(target);
+          }
+          break;
+        }
+        case 0xf6:
+          position = checkedAdvance(position, 2, bytes.size());
+          bytes[position - 1] = bytes[position - 2];
+          break;
+        case 0xf7:
+          break;
+        case 0xf8:
+          position = checkedAdvance(position, 1, bytes.size());
+          gate = bytes[position - 1];
+          break;
+        case 0xf9:
+          if ((nowVolumeCommand & 0x80) == 0) {
+            if (nowVolumeCommand < 15) {
+              standardVolume(static_cast<std::uint8_t>(nowVolumeCommand + 1));
+            }
+          } else if (nowVolumeCommand > 0x80) {
+            standardVolume(static_cast<std::uint8_t>(nowVolumeCommand - 1));
+          }
+          break;
+        case 0xfa:
+          if ((nowVolumeCommand & 0x80) == 0) {
+            if (nowVolumeCommand > 0) {
+              standardVolume(static_cast<std::uint8_t>(nowVolumeCommand - 1));
+            }
+          } else if (nowVolumeCommand < 0xff) {
+            standardVolume(static_cast<std::uint8_t>(nowVolumeCommand + 1));
+          }
+          break;
+        case 0xfb:
+          position = checkedAdvance(position, 1, bytes.size());
+          standardVolume(bytes[position - 1]);
+          break;
+        case 0xfc:
+          position = checkedAdvance(position, 1, bytes.size());
+          if (midi) {
+            control(10, bytes[position - 1]);
+          }
+          break;
+        case 0xfd:
+          position = checkedAdvance(position, 1, bytes.size());
+          if (midi) {
+            event({static_cast<std::uint8_t>(0xc0 | channel),
+                   static_cast<std::uint8_t>(bytes[position - 1] & 0x7f)},
+                  tick);
+          }
+          break;
+        case 0xfe:
+          position = checkedAdvance(position, 2, bytes.size());
+          if (midi) {
+            control(bytes[position - 2], bytes[position - 1]);
+          }
+          break;
+        case 0xff:
+          position = checkedAdvance(position, 1, bytes.size());
+          sequence.tempos.push_back({tick, bytes[position - 1], order++});
+          break;
+        default:
+          throw MidiError("internal MIDI conversion error");
+      }
+    }
+    result.endTick = tick;
+  }
+};
+
+void writeBigEndian(std::ostream& output, std::uint32_t value, int bytes) {
+  for (int shift = (bytes - 1) * 8; shift >= 0; shift -= 8) {
+    output.put(static_cast<char>((value >> shift) & 0xff));
+  }
+}
+
+void writeVariable(std::vector<std::uint8_t>& output, std::uint64_t value) {
+  if (value > 0x0fffffff) {
+    throw MidiError("SMF delta time exceeds the 28-bit limit");
+  }
+  std::uint32_t buffer = static_cast<std::uint32_t>(value & 0x7f);
+  while ((value >>= 7) != 0) {
+    buffer <<= 8;
+    buffer |= static_cast<std::uint32_t>((value & 0x7f) | 0x80);
+  }
+  for (;;) {
+    output.push_back(static_cast<std::uint8_t>(buffer & 0xff));
+    if ((buffer & 0x80) == 0) {
+      break;
+    }
+    buffer >>= 8;
+  }
+}
+
+void appendMeta(std::vector<std::uint8_t>& output, std::uint64_t delta,
+                std::uint8_t type, const std::vector<std::uint8_t>& data) {
+  writeVariable(output, delta);
+  output.push_back(0xff);
+  output.push_back(type);
+  writeVariable(output, data.size());
+  output.insert(output.end(), data.begin(), data.end());
+}
+
+void writeChunk(std::ostream& output, const std::vector<std::uint8_t>& data) {
+  output.write("MTrk", 4);
+  if (data.size() > std::numeric_limits<std::uint32_t>::max()) {
+    throw MidiError("SMF track is too large");
+  }
+  writeBigEndian(output, static_cast<std::uint32_t>(data.size()), 4);
+  output.write(reinterpret_cast<const char*>(data.data()),
+               static_cast<std::streamsize>(data.size()));
+}
+
+int eventPriority(const MidiEvent& event) {
+  if (event.bytes.empty()) {
+    return 1;
+  }
+  const std::uint8_t status = event.bytes.front() & 0xf0;
+  if (status == 0x80 ||
+      (status == 0x90 && event.bytes.size() >= 3 && event.bytes[2] == 0)) {
+    return 0;
+  }
+  if (status == 0x90) {
+    return 2;
+  }
+  return 1;
+}
+
+}  // namespace
+
+MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
+                              const int* trackOffsets, int trackCount,
+                              int loops) {
+  if (data == nullptr || trackOffsets == nullptr || length == 0 ||
+      trackCount <= 0) {
+    throw MidiError("MDX has no track data");
+  }
+  if (loops < 1) {
+    throw MidiError("MIDI loop count must be positive");
+  }
+
+  MidiSequence sequence;
+  sequence.tempos.push_back({0, 0xc8, 0});
+  for (int track = 0; track < trackCount; ++track) {
+    if (trackOffsets[track] < 0 ||
+        static_cast<std::size_t>(trackOffsets[track]) >= length) {
+      continue;
+    }
+    TrackConverter converter(sequence);
+    converter.result.sourceTrack = track;
+    converter.bytes.assign(data, data + length);
+    converter.position = static_cast<std::size_t>(trackOffsets[track]);
+    converter.loopLimit = loops;
+    converter.midi = track >= 16;
+    converter.channel = track & 0x0f;
+    converter.run();
+    sequence.endTick = std::max(sequence.endTick, converter.result.endTick);
+    if (converter.emitted) {
+      sequence.tracks.push_back(std::move(converter.result));
+    }
+  }
+
+  std::stable_sort(sequence.tempos.begin(), sequence.tempos.end(),
+                   [](const MidiTempo& left, const MidiTempo& right) {
+                     if (left.tick != right.tick) {
+                       return left.tick < right.tick;
+                     }
+                     return left.order < right.order;
+                   });
+  return sequence;
+}
+
+std::vector<ScheduledMidiEvent> scheduleMidiEvents(
+    const MidiSequence& sequence) {
+  struct PendingEvent {
+    std::uint64_t tick = 0;
+    std::uint64_t order = 0;
+    int priority = 0;
+    std::vector<std::uint8_t> bytes;
+  };
+
+  std::vector<PendingEvent> pending;
+  std::uint64_t trackOrder = 0;
+  for (const MidiTrack& track : sequence.tracks) {
+    for (const MidiEvent& event : track.events) {
+      pending.push_back({event.tick, (trackOrder << 32) + event.order,
+                         eventPriority(event), event.bytes});
+    }
+    ++trackOrder;
+  }
+  std::stable_sort(pending.begin(), pending.end(),
+                   [](const PendingEvent& left, const PendingEvent& right) {
+                     if (left.tick != right.tick) {
+                       return left.tick < right.tick;
+                     }
+                     if (left.priority != right.priority) {
+                       return left.priority < right.priority;
+                     }
+                     return left.order < right.order;
+                   });
+
+  std::vector<MidiTempo> tempos = sequence.tempos;
+  std::stable_sort(tempos.begin(), tempos.end(),
+                   [](const MidiTempo& left, const MidiTempo& right) {
+                     if (left.tick != right.tick) {
+                       return left.tick < right.tick;
+                     }
+                     return left.order < right.order;
+                   });
+
+  std::vector<ScheduledMidiEvent> scheduled;
+  scheduled.reserve(pending.size());
+  std::uint64_t elapsed = 0;
+  std::uint64_t previousTick = 0;
+  std::uint8_t tempo = 0xc8;
+  std::size_t tempoIndex = 0;
+  for (PendingEvent& event : pending) {
+    while (tempoIndex < tempos.size() &&
+           tempos[tempoIndex].tick <= event.tick) {
+      const MidiTempo& change = tempos[tempoIndex++];
+      elapsed += (change.tick - previousTick) *
+                 (256u * (256u - static_cast<unsigned>(tempo)));
+      previousTick = change.tick;
+      tempo = change.value;
+    }
+    const std::uint64_t eventTime =
+        elapsed + (event.tick - previousTick) *
+                      (256u * (256u - static_cast<unsigned>(tempo)));
+    scheduled.push_back({eventTime, std::move(event.bytes)});
+  }
+  return scheduled;
+}
+
+void writeStandardMidi(const MidiSequence& sequence,
+                       const std::filesystem::path& path,
+                       const std::string& title) {
+  if (sequence.tracks.size() >= std::numeric_limits<std::uint16_t>::max()) {
+    throw MidiError("too many tracks for an SMF");
+  }
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output) {
+    throw MidiError("cannot create MIDI file: " + path.string());
+  }
+
+  output.write("MThd", 4);
+  writeBigEndian(output, 6, 4);
+  writeBigEndian(output, 1, 2);
+  writeBigEndian(output,
+                 static_cast<std::uint32_t>(sequence.tracks.size() + 1), 2);
+  writeBigEndian(output, static_cast<std::uint32_t>(sequence.ppqn), 2);
+
+  std::vector<std::uint8_t> conductor;
+  if (!title.empty()) {
+    appendMeta(conductor, 0, 0x03,
+               std::vector<std::uint8_t>(title.begin(), title.end()));
+  }
+  std::uint64_t previousTick = 0;
+  std::uint64_t lastTempoTick = std::numeric_limits<std::uint64_t>::max();
+  std::uint8_t lastTempoValue = 0;
+  for (const MidiTempo& tempo : sequence.tempos) {
+    if (tempo.tick == lastTempoTick && tempo.value == lastTempoValue) {
+      continue;
+    }
+    const std::uint32_t microsPerQuarter =
+        256u * (256u - static_cast<unsigned>(tempo.value)) *
+        static_cast<unsigned>(sequence.ppqn);
+    const std::vector<std::uint8_t> value = {
+        static_cast<std::uint8_t>((microsPerQuarter >> 16) & 0xff),
+        static_cast<std::uint8_t>((microsPerQuarter >> 8) & 0xff),
+        static_cast<std::uint8_t>(microsPerQuarter & 0xff),
+    };
+    appendMeta(conductor, tempo.tick - previousTick, 0x51, value);
+    previousTick = tempo.tick;
+    lastTempoTick = tempo.tick;
+    lastTempoValue = tempo.value;
+  }
+  appendMeta(conductor, sequence.endTick - previousTick, 0x2f, {});
+  writeChunk(output, conductor);
+
+  for (const MidiTrack& source : sequence.tracks) {
+    std::vector<MidiEvent> events = source.events;
+    std::stable_sort(events.begin(), events.end(),
+                     [](const MidiEvent& left, const MidiEvent& right) {
+                       if (left.tick != right.tick) {
+                         return left.tick < right.tick;
+                       }
+                       const int leftPriority = eventPriority(left);
+                       const int rightPriority = eventPriority(right);
+                       if (leftPriority != rightPriority) {
+                         return leftPriority < rightPriority;
+                       }
+                       return left.order < right.order;
+                     });
+
+    std::vector<std::uint8_t> track;
+    const std::string name = "MADRV track " +
+                             std::to_string(source.sourceTrack + 1);
+    appendMeta(track, 0, 0x03,
+               std::vector<std::uint8_t>(name.begin(), name.end()));
+    previousTick = 0;
+    for (const MidiEvent& event : events) {
+      if (event.bytes.empty()) {
+        continue;
+      }
+      writeVariable(track, event.tick - previousTick);
+      if (event.bytes.front() == 0xf0 || event.bytes.front() == 0xf7) {
+        track.push_back(event.bytes.front());
+        writeVariable(track, event.bytes.size() - 1);
+        track.insert(track.end(), event.bytes.begin() + 1, event.bytes.end());
+      } else {
+        track.insert(track.end(), event.bytes.begin(), event.bytes.end());
+      }
+      previousTick = event.tick;
+    }
+    appendMeta(track, source.endTick > previousTick ? source.endTick - previousTick
+                                                    : 0,
+               0x2f, {});
+    writeChunk(output, track);
+  }
+  if (!output) {
+    throw MidiError("failed while writing MIDI file: " + path.string());
+  }
+}
+
+}  // namespace mpxadrv
