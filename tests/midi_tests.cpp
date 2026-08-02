@@ -35,7 +35,7 @@ int main() {
         0xe0, 0x09, 0x0c,        // Bend range 12.
         0xe0, 0x0e, 0x01, 0xc1, 0x09,  // Direct Program Change.
         0xff, 0xbe,              // Tempo 190.
-        0xf1, 0x00, 0x00,        // End.
+        0xf1, 0x00,              // End.
     };
     const int offsets[] = {0};
     const mpxadrv::MidiSequence sequence = mpxadrv::convertMadrvMidi(
@@ -69,6 +69,9 @@ int main() {
             "first scheduled MIDI event is late");
     require(scheduled[1].microseconds == 177152,
             "tempo-aware MIDI scheduling is wrong");
+    timing.endTick = 20;
+    require(mpxadrv::midiDurationMicroseconds(timing) == 312320,
+            "tempo-aware MIDI duration is wrong");
 
     const std::filesystem::path output =
         std::filesystem::temp_directory_path() /
@@ -97,7 +100,7 @@ int main() {
         0xe2, 0x00,        // MT-32 reset.
         0xe2, 0x14,        // CM-64 reset.
         0xe2, 0x1c,        // GS reset.
-        0xf1, 0x00, 0x00,
+        0xf1, 0x00,
     };
     const mpxadrv::MidiSequence resetSequence = mpxadrv::convertMadrvMidi(
         resets.data(), resets.size(), offsets, 1, 1);
@@ -120,6 +123,24 @@ int main() {
     require(resetEvents[1].bytes == mt32Reset,
             "CM-64 reset SysEx is wrong");
     require(resetEvents[2].bytes == gsReset, "GS reset SysEx is wrong");
+
+    const std::vector<std::uint8_t> laterMdr = {
+        0xe0, 0x1d, 0x00,              // Later MDR timing-mode marker.
+        0xe0, 0x08, 0x80,              // Switch to MIDI channel 1.
+        0xe2, 0x28, 0x02, 0x03, 0x04,  // SC reverb packed data.
+        0xe2, 0x32, 0x00, 0x08,        // SC partial reserve.
+        0xf1, 0x00,
+    };
+    const mpxadrv::MidiSequence laterSequence = mpxadrv::convertMadrvMidi(
+        laterMdr.data(), laterMdr.size(), offsets, 1, 1);
+    require(laterSequence.warnings.empty(),
+            "supported later MDR/SC command produced a warning");
+    require(laterSequence.tracks.size() == 1,
+            "later MDR/SC commands did not emit a track");
+    require(laterSequence.tracks[0].events.size() == 2,
+            "SC packed SysEx event count is wrong");
+    require(laterSequence.tracks[0].events[0].bytes[3] == 0x42,
+            "SC packed SysEx model is wrong");
 
     const std::filesystem::path resetOutput =
         std::filesystem::temp_directory_path() /

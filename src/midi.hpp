@@ -52,6 +52,8 @@ MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
 std::vector<ScheduledMidiEvent> scheduleMidiEvents(
     const MidiSequence& sequence);
 
+std::uint64_t midiDurationMicroseconds(const MidiSequence& sequence);
+
 void writeStandardMidi(const MidiSequence& sequence,
                        const std::filesystem::path& path,
                        const std::string& title);

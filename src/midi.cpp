@@ -88,6 +88,7 @@ struct TrackConverter {
   bool emitted = false;
   bool stopped = false;
   std::uint8_t rolandDevice = 0x10;
+  std::array<std::uint8_t, 16> scPartialReserve{};
   std::vector<std::pair<int, int>> polyNotes;
 
   void warning(const std::string& message) {
@@ -230,6 +231,56 @@ struct TrackConverter {
           tick);
   }
 
+  void rolandPack(std::uint32_t packedAddress,
+                  const std::vector<std::uint8_t>& data) {
+    const std::uint8_t model =
+        static_cast<std::uint8_t>((packedAddress >> 24) & 0xff);
+    const std::uint8_t address1 =
+        static_cast<std::uint8_t>((packedAddress >> 16) & 0x7f);
+    const std::uint8_t address2 =
+        static_cast<std::uint8_t>((packedAddress >> 8) & 0x7f);
+    const std::uint8_t address3 =
+        static_cast<std::uint8_t>(packedAddress & 0x7f);
+    unsigned sum = address1 + address2 + address3;
+    std::vector<std::uint8_t> message = {
+        0xf0, 0x41, rolandDevice, model, 0x12,
+        address1, address2, address3,
+    };
+    for (const std::uint8_t value : data) {
+      const std::uint8_t sevenBit = value & 0x7f;
+      message.push_back(sevenBit);
+      sum += sevenBit;
+    }
+    message.push_back(static_cast<std::uint8_t>((-sum) & 0x7f));
+    message.push_back(0xf7);
+    event(std::move(message), tick);
+  }
+
+  std::vector<std::uint8_t> fixedParameters(std::size_t count) {
+    const std::size_t start = position;
+    position = checkedAdvance(position, count, bytes.size());
+    return {bytes.begin() + static_cast<std::ptrdiff_t>(start),
+            bytes.begin() + static_cast<std::ptrdiff_t>(position)};
+  }
+
+  std::vector<std::uint8_t> packedParameters() {
+    position = checkedAdvance(position, 1, bytes.size());
+    const std::size_t count = bytes[position - 1];
+    return fixedParameters(count);
+  }
+
+  std::vector<std::uint8_t> terminatedParameters() {
+    std::vector<std::uint8_t> result;
+    while (position < bytes.size()) {
+      const std::uint8_t value = bytes[position++];
+      if (value == 0) {
+        return result;
+      }
+      result.push_back(value & 0x7f);
+    }
+    throw MidiError("unterminated string in E2 command");
+  }
+
   void extendedE2() {
     if (!midi) {
       warning(
@@ -249,6 +300,115 @@ struct TrackConverter {
         rolandDevice = 0x10;
         rolandDt1(0x4240007f, 0x00);
         break;
+      case 0x1d: {  // SC:RM
+        const auto parameters = fixedParameters(1);
+        rolandDevice = 0x10;
+        rolandDt1(0x42401015u +
+                      (static_cast<std::uint32_t>(channel) << 8),
+                  parameters[0]);
+        break;
+      }
+      case 0x1e:
+      case 0x1f:
+      case 0x20:
+      case 0x21:
+      case 0x22: {  // SC rhythm NRPN controls.
+        const auto parameters = fixedParameters(2);
+        static constexpr std::array<std::uint8_t, 5> kNrpnMsb = {
+            0x18, 0x1a, 0x1c, 0x1d, 0x1e,
+        };
+        control(99, kNrpnMsb[subcommand - 0x1e]);
+        control(98, parameters[0]);
+        control(6, parameters[1]);
+        break;
+      }
+      case 0x23:
+      case 0x24:
+      case 0x25: {  // SC reverb macro/time/level.
+        const auto parameters = fixedParameters(1);
+        static constexpr std::array<std::uint32_t, 3> kAddresses = {
+            0x42400130, 0x42400134, 0x42400133,
+        };
+        rolandDt1(kAddresses[subcommand - 0x23], parameters[0]);
+        break;
+      }
+      case 0x26:
+      case 0x27: {  // SC reverb/chorus send.
+        const auto parameters = fixedParameters(1);
+        control(subcommand == 0x26 ? 0x5b : 0x5d, parameters[0]);
+        break;
+      }
+      case 0x28:
+      case 0x29:
+      case 0x2a: {  // SC packed effect/tone parameters.
+        const auto parameters = packedParameters();
+        std::uint32_t address = subcommand == 0x28 ? 0x42400130
+                                : subcommand == 0x29 ? 0x42400138
+                                                   : 0x42401030u +
+                                                         (static_cast<std::uint32_t>(channel) << 8);
+        rolandPack(address, parameters);
+        break;
+      }
+      case 0x2b: {  // SC key shift.
+        const auto parameters = fixedParameters(1);
+        rolandDt1(0x42401016u +
+                      (static_cast<std::uint32_t>(channel) << 8),
+                  static_cast<std::uint8_t>(parameters[0] + 0x40));
+        break;
+      }
+      case 0x2c:
+      case 0x2d:
+      case 0x2e:
+      case 0x2f:
+      case 0x30: {  // SC bank/portamento/pedal controls.
+        const auto parameters = fixedParameters(1);
+        static constexpr std::array<std::uint8_t, 5> kControllers = {
+            0x00, 0x05, 0x41, 0x42, 0x43,
+        };
+        control(kControllers[subcommand - 0x2c], parameters[0]);
+        break;
+      }
+      case 0x31: {  // SC arbitrary memory write.
+        const auto address = fixedParameters(3);
+        const auto parameters = packedParameters();
+        rolandPack(0x42000000u |
+                       (static_cast<std::uint32_t>(address[0]) << 16) |
+                       (static_cast<std::uint32_t>(address[1]) << 8) |
+                       address[2],
+                   parameters);
+        break;
+      }
+      case 0x32:  // SC partial reserve updates a shared 16-byte table.
+      {
+        const auto parameters = fixedParameters(2);
+        if (parameters[0] < scPartialReserve.size()) {
+          scPartialReserve[parameters[0]] = parameters[1] & 0x7f;
+        }
+        rolandPack(0x42400110,
+                   std::vector<std::uint8_t>(scPartialReserve.begin(),
+                                             scPartialReserve.end()));
+        break;
+      }
+      case 0x33:  // SC display text.
+        rolandPack(0x45100000, terminatedParameters());
+        break;
+      case 0x34:  // SC dot-display buffer data.
+        static_cast<void>(fixedParameters(2));
+        break;
+      case 0x35:  // SC dot-display clear.
+      case 0x36:  // SC dot-display flush.
+        break;
+      case 0x37: {  // SC master tune (two bytes).
+        rolandPack(0x42400000, fixedParameters(2));
+        break;
+      }
+      case 0x38:
+      case 0x39:
+      case 0x3a: {  // SC master volume/key/pan.
+        const auto parameters = fixedParameters(1);
+        rolandDt1(0x42400001u + (subcommand - 0x38), parameters[0]);
+        break;
+      }
       default:
         warning("unsupported E2 subcommand " + hexByte(subcommand) +
                 "; track stopped safely");
@@ -263,7 +423,7 @@ struct TrackConverter {
     if (subcommand == 0xff) {
       return;
     }
-    if (subcommand > 0x1c) {
+    if (subcommand > 0x1d) {
       warning("unknown E0 subcommand " + hexByte(subcommand));
       stopped = true;
       return;
@@ -284,9 +444,9 @@ struct TrackConverter {
       return;
     }
 
-    static constexpr std::array<int, 29> parameterCounts = {
+    static constexpr std::array<int, 30> parameterCounts = {
         0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0,
-        2, 1, 0, 0, 1, 1, 3, 3, 4, 4, 1, 1, 1, 1,
+        2, 1, 0, 0, 1, 1, 3, 3, 4, 4, 1, 1, 1, 1, 1,
     };
     const int count = parameterCounts[subcommand];
     const std::size_t parameters = position;
@@ -351,6 +511,10 @@ struct TrackConverter {
         break;
       case 0x19:
         rolandDevice = bytes[parameters] & 0x7f;
+        break;
+      case 0x1d:
+        // Present as E0 1D 00 in later MDR samples. It selects a driver
+        // timing mode and does not produce MIDI output.
         break;
       default:
         break;
@@ -437,9 +601,14 @@ struct TrackConverter {
           position = checkedAdvance(position, 1, bytes.size());
           break;
         case 0xf1: {
-          position = checkedAdvance(position, 2, bytes.size());
+          position = checkedAdvance(position, 1, bytes.size());
+          if (bytes[position - 1] == 0) {
+            stopped = true;
+            break;
+          }
+          position = checkedAdvance(position, 1, bytes.size());
           const std::int16_t offset = readSignedWord(bytes, commandPosition + 1);
-          if (offset == 0 || ++songLoops >= loopLimit) {
+          if (++songLoops >= loopLimit) {
             stopped = true;
           } else {
             const std::int64_t target = static_cast<std::int64_t>(position) + offset;
@@ -716,6 +885,33 @@ std::vector<ScheduledMidiEvent> scheduleMidiEvents(
     scheduled.push_back({eventTime, std::move(event.bytes)});
   }
   return scheduled;
+}
+
+std::uint64_t midiDurationMicroseconds(const MidiSequence& sequence) {
+  std::vector<MidiTempo> tempos = sequence.tempos;
+  std::stable_sort(tempos.begin(), tempos.end(),
+                   [](const MidiTempo& left, const MidiTempo& right) {
+                     if (left.tick != right.tick) {
+                       return left.tick < right.tick;
+                     }
+                     return left.order < right.order;
+                   });
+
+  std::uint64_t elapsed = 0;
+  std::uint64_t previousTick = 0;
+  std::uint8_t tempo = 0xc8;
+  for (const MidiTempo& change : tempos) {
+    if (change.tick > sequence.endTick) {
+      break;
+    }
+    elapsed += (change.tick - previousTick) *
+               (256u * (256u - static_cast<unsigned>(tempo)));
+    previousTick = change.tick;
+    tempo = change.value;
+  }
+  return elapsed +
+         (sequence.endTick - previousTick) *
+             (256u * (256u - static_cast<unsigned>(tempo)));
 }
 
 void writeStandardMidi(const MidiSequence& sequence,

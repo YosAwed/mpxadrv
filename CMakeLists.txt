@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mpxadrv VERSION 0.5.0 LANGUAGES CXX)
+project(mpxadrv VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,6 +34,7 @@ add_executable(mpxadrv
   src/compat.cpp
   src/core_midi.cpp
   src/main.cpp
+  src/mdr.cpp
   src/midi.cpp
   src/software_synth.cpp
   src/tdx.cpp
@@ -58,6 +59,9 @@ include(CTest)
 if(BUILD_TESTING)
   add_test(NAME help COMMAND mpxadrv --help)
   add_test(NAME version COMMAND mpxadrv --version)
+  set_tests_properties(version PROPERTIES
+    PASS_REGULAR_EXPRESSION "macOS CLI adaptation developed by Awed"
+  )
 
   add_executable(tdx_tests
     tests/tdx_tests.cpp
@@ -75,6 +79,14 @@ if(BUILD_TESTING)
   target_include_directories(compat_tests PRIVATE src)
   target_compile_options(compat_tests PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME compatibility_scanner COMMAND compat_tests)
+
+  add_executable(mdr_tests
+    tests/mdr_tests.cpp
+    src/mdr.cpp
+  )
+  target_include_directories(mdr_tests PRIVATE src)
+  target_compile_options(mdr_tests PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME mdr_loader COMMAND mdr_tests)
 
   add_executable(midi_tests
     tests/midi_tests.cpp

@@ -32,6 +32,7 @@ extern "C" {
 #include "tdx.hpp"
 #include "compat.hpp"
 #include "core_midi.hpp"
+#include "mdr.hpp"
 #include "midi.hpp"
 #include "software_synth.hpp"
 
@@ -39,7 +40,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "0.5.0";
+constexpr const char* kVersion = "0.6.0";
 constexpr int kDefaultRate = 48'000;
 constexpr int kDefaultLoops = 1;
 constexpr std::uint32_t kFramesPerBuffer = 2'048;
@@ -49,6 +50,13 @@ volatile std::sig_atomic_t gInterrupted = 0;
 
 void handleSignal(int) {
   gInterrupted = 1;
+}
+
+void printStartupBanner(std::ostream& stream) {
+  stream << "mpxadrv " << kVersion << '\n'
+         << "Based on MADRV MUSIC CONVERTER Version 1.10 "
+            "(c)1991,92 Konoa\n"
+         << "macOS CLI adaptation developed by Awed (c)2026\n\n";
 }
 
 class CliError : public std::runtime_error {
@@ -153,14 +161,14 @@ void printUsage(std::ostream& stream) {
   stream
       << "mpxadrv " << kVersion << " - MADRV/MDX player for macOS\n\n"
       << "Usage:\n"
-      << "  mpxadrv <file.mdx> [options]\n"
-      << "  mpxadrv play <file.mdx> [options]\n"
-      << "  mpxadrv info <file.mdx> [options]\n"
-      << "  mpxadrv render <file.mdx> -o <file.wav> [options]\n\n"
-      << "  mpxadrv midi <file.mdx> [-o <file.mid>] [options]\n"
-      << "  mpxadrv midi-synth <file.mdx> [--soundfont <file.sf2|file.dls>] [options]\n"
+      << "  mpxadrv <file.mdx|file.mdr> [options]\n"
+      << "  mpxadrv play <file.mdx|file.mdr> [options]\n"
+      << "  mpxadrv info <file.mdx|file.mdr> [options]\n"
+      << "  mpxadrv render <file.mdx|file.mdr> -o <file.wav> [options]\n\n"
+      << "  mpxadrv midi <file.mdx|file.mdr> [-o <file.mid>] [options]\n"
+      << "  mpxadrv midi-synth <file.mdx|file.mdr> [--soundfont <file.sf2|file.dls>] [options]\n"
       << "  mpxadrv midi-list\n"
-      << "  mpxadrv midi-play <file.mdx> --destination <index-or-name> [options]\n"
+      << "  mpxadrv midi-play <file.mdx|file.mdr> --destination <index-or-name> [options]\n"
       << "  mpxadrv tdx <file.tdx> [-o <file.pdx>] [options]\n\n"
       << "Options:\n"
       << "  -o, --output <path>    WAV, MIDI, or compiled PDX output path\n"
@@ -177,7 +185,7 @@ void printUsage(std::ostream& stream) {
 Options parseArguments(int argc, char* argv[]) {
   if (argc < 2) {
     printUsage(std::cerr);
-    throw CliError("an MDX file is required");
+    throw CliError("an MDX or MDR file is required");
   }
 
   Options options;
@@ -188,7 +196,6 @@ Options parseArguments(int argc, char* argv[]) {
     std::exit(0);
   }
   if (first == "--version") {
-    std::cout << "mpxadrv " << kVersion << '\n';
     std::exit(0);
   }
   if (first == "play" || first == "info" || first == "render" ||
@@ -212,7 +219,6 @@ Options parseArguments(int argc, char* argv[]) {
       std::exit(0);
     }
     if (argument == "--version") {
-      std::cout << "mpxadrv " << kVersion << '\n';
       std::exit(0);
     }
     if (argument == "-o" || argument == "--output") {
@@ -234,12 +240,12 @@ Options parseArguments(int argc, char* argv[]) {
     } else if (options.input.empty()) {
       options.input = argument;
     } else {
-      throw CliError("only one MDX file can be processed at a time");
+      throw CliError("only one MDX or MDR file can be processed at a time");
     }
   }
 
   if (options.input.empty() && options.command != "midi-list") {
-    throw CliError("an MDX file is required");
+    throw CliError("an MDX or MDR file is required");
   }
   if (options.command == "midi-list" && !options.input.empty()) {
     throw CliError("midi-list does not accept an input file");
@@ -768,9 +774,196 @@ void renderSong(Song& song, const fs::path& outputPath) {
   }
 }
 
+fs::path locateMdrPdx(const mpxadrv::MdrFile& mdr, const fs::path& input,
+                      const fs::path& extraDirectory) {
+  if (mdr.pdxName.empty()) {
+    return {};
+  }
+  std::vector<std::string> names = {mdr.pdxName};
+  if (fs::path(mdr.pdxName).extension().empty()) {
+    names.push_back(mdr.pdxName + ".pdx");
+  }
+  for (const std::string& name : names) {
+    if (fs::path found = findCaseInsensitive(input.parent_path(), name);
+        !found.empty()) {
+      return found;
+    }
+    if (!extraDirectory.empty()) {
+      if (fs::path found =
+              findCaseInsensitive(fs::absolute(extraDirectory), name);
+          !found.empty()) {
+        return found;
+      }
+    }
+  }
+  return {};
+}
+
+fs::path checkedSoundFont(const fs::path& requested) {
+  if (requested.empty()) {
+    return {};
+  }
+  std::error_code error;
+  const fs::path soundFont = fs::absolute(requested, error);
+  if (error || !fs::is_regular_file(soundFont, error)) {
+    throw CliError("SoundFont file not found: " + requested.string());
+  }
+  const std::string extension = asciiLower(soundFont.extension().string());
+  if (extension != ".sf2" && extension != ".dls") {
+    throw CliError("--soundfont requires an .sf2 or .dls file");
+  }
+  return soundFont;
+}
+
+void printMidiWarnings(const mpxadrv::MidiSequence& sequence) {
+  for (const std::string& warning : sequence.warnings) {
+    std::cerr << "mpxadrv: MIDI warning: " << warning << '\n';
+  }
+}
+
+int processMdr(const Options& options) {
+  std::error_code error;
+  const fs::path input = fs::absolute(options.input, error);
+  if (error || !fs::is_regular_file(input, error)) {
+    throw CliError("MDR file not found: " + options.input.string());
+  }
+  if (!options.tdxFile.empty()) {
+    throw CliError("--tdx-file is not supported for MDR input");
+  }
+
+  const mpxadrv::MdrFile mdr = mpxadrv::loadMdr(input);
+  const std::string title = shiftJisToUtf8(mdr.title.c_str());
+  const mpxadrv::MidiSequence sequence = mpxadrv::convertMadrvMidi(
+      mdr.data.data(), mdr.data.size(), mdr.trackOffsets.data(),
+      mpxadrv::MdrFile::kTrackCount, options.loops);
+  const std::uint64_t durationUs =
+      mpxadrv::midiDurationMicroseconds(sequence);
+  const int durationSeconds = static_cast<int>(std::min<std::uint64_t>(
+      (durationUs + 999'999) / 1'000'000,
+      static_cast<std::uint64_t>(std::numeric_limits<int>::max())));
+
+  if (options.command == "info") {
+    std::cout << "Title: " << (title.empty() ? "(untitled)" : title) << '\n'
+              << "Format: MADRV MDR (32-track EX-MDR)\n"
+              << "Duration: " << formatDuration(durationSeconds) << " ("
+              << durationSeconds << " seconds)\n"
+              << "Tracks: " << mpxadrv::MdrFile::kTrackCount << " capacity, "
+              << mdr.activeTracks << " active\n"
+              << "MIDI tracks: " << sequence.tracks.size() << '\n';
+    if (mdr.pdxName.empty()) {
+      std::cout << "PDX: none\n";
+    } else {
+      const fs::path pdx = locateMdrPdx(mdr, input, options.pdxDirectory);
+      std::cout << "PDX: " << shiftJisToUtf8(mdr.pdxName.c_str());
+      if (pdx.empty()) {
+        std::cout << " (not found)\n";
+      } else {
+        std::cout << " (" << pdx.string() << ")\n";
+      }
+    }
+    if (sequence.tracks.empty()) {
+      std::cout << "Playback: FM/PCM compatibility path\n";
+    } else {
+      std::cout << "Playback: macOS software MIDI synthesizer";
+      if (!mdr.pdxName.empty()) {
+        std::cout << " (MIDI portion; FM/PCM mixing is not available)";
+      }
+      std::cout << '\n';
+    }
+    printMidiWarnings(sequence);
+    return 0;
+  }
+
+  if (sequence.tracks.empty() &&
+      (options.command == "play" || options.command == "render")) {
+    const fs::path pdx = locateMdrPdx(mdr, input, options.pdxDirectory);
+    bool includePdx = mdr.pdxName.empty() || !pdx.empty();
+    if (includePdx && !pdx.empty() &&
+        asciiLower(pdx.extension().string()) == ".tdx") {
+      try {
+        static_cast<void>(mpxadrv::compileTdx(pdx, pdx.parent_path()));
+      } catch (const mpxadrv::TdxError& tdxError) {
+        includePdx = false;
+        std::cerr << "mpxadrv: MDR warning: " << tdxError.what()
+                  << "; continuing with FM only\n";
+      }
+    } else if (!includePdx) {
+      std::cerr << "mpxadrv: MDR warning: PCM definition was not found; "
+                   "continuing with FM only\n";
+    }
+    const std::vector<std::uint8_t> mdx =
+        mpxadrv::makeMdxCompatible(mdr, includePdx);
+    TemporaryDirectory temporary;
+    fs::path mdxFilename = input.filename();
+    mdxFilename.replace_extension(".mdx");
+    const fs::path mdxPath = temporary.path() / mdxFilename;
+    std::ofstream output(mdxPath, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(mdx.data()),
+                 static_cast<std::streamsize>(mdx.size()));
+    if (!output) {
+      throw CliError("failed to prepare MDR FM/PCM playback");
+    }
+    output.close();
+
+    Options compatible = options;
+    compatible.input = mdxPath;
+    compatible.pdxDirectory =
+        !includePdx || pdx.empty() ? options.pdxDirectory : pdx.parent_path();
+    Song song(compatible);
+    std::cout << (title.empty() ? input.filename().string() : title) << "  ["
+              << formatDuration(song.duration()) << "]\n";
+    if (options.command == "render") {
+      renderSong(song, options.output);
+      std::cout << "Wrote " << fs::absolute(options.output).string() << '\n';
+      return 0;
+    }
+    std::cout << "Playing MDR FM/PCM... press Ctrl-C to stop.\n";
+    AudioPlayer player(song);
+    player.play();
+    std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
+    return 0;
+  }
+
+  if (options.command == "render") {
+    throw CliError(
+        "mixed MDR WAV rendering is not available; export or play the MIDI portion");
+  }
+  if (sequence.tracks.empty()) {
+    throw CliError("the MDR file contains no convertible MIDI events");
+  }
+  printMidiWarnings(sequence);
+
+  if (options.command == "midi") {
+    mpxadrv::writeStandardMidi(sequence, options.output, title);
+    std::cout << "Exported " << sequence.tracks.size() << " MIDI track"
+              << (sequence.tracks.size() == 1 ? "" : "s") << '\n'
+              << "Wrote " << fs::absolute(options.output).string() << '\n';
+    return 0;
+  }
+  if (options.command == "midi-play") {
+    std::cout << "Sending MDR MIDI... press Ctrl-C to stop.\n";
+    mpxadrv::playMidiSequence(sequence, options.midiDestination,
+                              [] { return gInterrupted != 0; });
+    std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
+    return 0;
+  }
+
+  const fs::path soundFont = checkedSoundFont(options.soundFont);
+  std::cout << (title.empty() ? input.filename().string() : title) << "  ["
+            << formatDuration(durationSeconds) << "]\n"
+            << "Playing MDR MIDI with the macOS "
+            << (soundFont.empty() ? "DLSMusicDevice" : "AUMIDISynth")
+            << "... press Ctrl-C to stop.\n";
+  mpxadrv::playSoftwareSynth(sequence, soundFont,
+                             [] { return gInterrupted != 0; });
+  std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
+  printStartupBanner(std::cout);
   std::signal(SIGINT, handleSignal);
   std::signal(SIGTERM, handleSignal);
 
@@ -805,6 +998,10 @@ int main(int argc, char* argv[]) {
       return 0;
     }
 
+    if (asciiLower(options.input.extension().string()) == ".mdr") {
+      return processMdr(options);
+    }
+
     Song song(options);
 
     if (options.command == "info") {
@@ -827,20 +1024,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (options.command == "midi-synth") {
-      fs::path soundFont;
-      if (!options.soundFont.empty()) {
-        std::error_code error;
-        soundFont = fs::absolute(options.soundFont, error);
-        if (error || !fs::is_regular_file(soundFont, error)) {
-          throw CliError("SoundFont file not found: " +
-                         options.soundFont.string());
-        }
-        const std::string extension =
-            asciiLower(soundFont.extension().string());
-        if (extension != ".sf2" && extension != ".dls") {
-          throw CliError("--soundfont requires an .sf2 or .dls file");
-        }
-      }
+      const fs::path soundFont = checkedSoundFont(options.soundFont);
       const mpxadrv::MidiSequence sequence = mpxadrv::convertMadrvMidi(
           song.mdxData(), song.mdxLength(), song.trackOffsets(),
           song.mdxTrackCount(), options.loops);
@@ -897,6 +1081,9 @@ int main(int argc, char* argv[]) {
     return 2;
   } catch (const mpxadrv::TdxError& error) {
     std::cerr << "mpxadrv: TDX: " << error.what() << '\n';
+    return 2;
+  } catch (const mpxadrv::MdrError& error) {
+    std::cerr << "mpxadrv: MDR: " << error.what() << '\n';
     return 2;
   } catch (const mpxadrv::MidiError& error) {
     std::cerr << "mpxadrv: MIDI: " << error.what() << '\n';
