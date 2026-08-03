@@ -44,6 +44,7 @@ those licenses. This repository does not copy or vendor either dependency.
 
 ```sh
 brew tap YosAwed/mpxadrv
+brew trust YosAwed/mpxadrv   # required by recent Homebrew third-party taps
 brew install mpxadrv
 ```
 
