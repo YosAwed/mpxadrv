@@ -1,8 +1,10 @@
-macOS binary (Apple Silicon runner) linked against Homebrew `mdxmini` and `fluid-synth`. Install those with Homebrew before running the binary, or prefer the formula:
+Install with Homebrew:
 
 ```sh
-brew install --HEAD --formula \
-  https://raw.githubusercontent.com/YosAwed/mpxadrv/main/Formula/mpxadrv.rb
+brew tap YosAwed/mpxadrv
+brew install mpxadrv
 ```
+
+A macOS binary (Apple Silicon runner) is also attached below. It is dynamically linked against Homebrew `mdxmini` and `fluid-synth`, so install those first if you use the archive instead of the formula.
 
 See `INSTALL.txt` inside the archive and the repository README.

@@ -1,19 +1,9 @@
-# Homebrew formula for mpxadrv (source install).
-#
-# From a clone:
-#   brew install --HEAD --formula ./Formula/mpxadrv.rb
-#
-# Without cloning:
-#   brew install --HEAD --formula \
-#     https://raw.githubusercontent.com/YosAwed/mpxadrv/main/Formula/mpxadrv.rb
-#
-# After a GitHub release tag vX.Y.Z, add a stable block:
-#   url "https://github.com/YosAwed/mpxadrv/archive/refs/tags/vX.Y.Z.tar.gz"
-#   sha256 "<sha256 of that tarball>"
-#   version "X.Y.Z"
 class Mpxadrv < Formula
   desc "Native macOS CLI player for MADRV/MXDRV MDX and MDR music"
   homepage "https://github.com/YosAwed/mpxadrv"
+  url "https://github.com/YosAwed/mpxadrv/archive/refs/tags/v0.6.1.tar.gz"
+  sha256 "6552485046bf135f3232cc9b865118edb908a4e4a1b9d11e8912e258561d71d6"
+  license :cannot_represent
   head "https://github.com/YosAwed/mpxadrv.git", branch: "main"
 
   depends_on "cmake" => :build

@@ -42,25 +42,20 @@ those licenses. This repository does not copy or vendor either dependency.
 
 ### Homebrew (recommended)
 
-Build and install from this repository's formula (HEAD of `main`):
-
 ```sh
-brew install --HEAD --formula \
-  https://raw.githubusercontent.com/YosAwed/mpxadrv/main/Formula/mpxadrv.rb
-```
-
-Or from a local clone:
-
-```sh
-brew install --HEAD --formula ./Formula/mpxadrv.rb
+brew tap YosAwed/mpxadrv
+brew install mpxadrv
 ```
 
 That installs `mpxadrv` and the interactive menu as `mpxadrv-player`.
-Upgrade later with `brew reinstall --HEAD mpxadrv` (or re-run the formula URL).
+Upgrade with `brew upgrade mpxadrv`. For the latest unreleased `main`:
 
-After a versioned GitHub release (`vX.Y.Z`), the formula can gain a stable
-`url`/`sha256` block so `brew install` without `--HEAD` works; until then use
-`--HEAD`.
+```sh
+brew install --HEAD mpxadrv
+```
+
+The tap lives at [YosAwed/homebrew-mpxadrv](https://github.com/YosAwed/homebrew-mpxadrv).
+A copy of the formula is also kept in this repository under `Formula/mpxadrv.rb`.
 
 ### GitHub Release binary
 

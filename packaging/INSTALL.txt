@@ -11,7 +11,7 @@ them by absolute path.
 
 Prefer a source install when possible:
 
-  brew install --HEAD --formula \
-    https://raw.githubusercontent.com/YosAwed/mpxadrv/main/Formula/mpxadrv.rb
+  brew tap YosAwed/mpxadrv
+  brew install mpxadrv
 
 SoundFonts are not included; see README.md for an optional SC-55 bank.
