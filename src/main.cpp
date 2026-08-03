@@ -190,7 +190,7 @@ void printUsage(std::ostream& stream) {
       << "  -p, --pdx-dir <path>   Additional PDX search directory\n"
       << "      --tdx-file <path>  Override the song's PDX with a TDX definition\n"
       << "      --destination <id> CoreMIDI USB/physical out (play, midi-play)\n"
-      << "      --soundfont <path>  SF2/DLS soft synth (default for MDR play)\n"
+      << "      --soundfont <path>  SF2/DLS soft synth (play/render/midi-synth)\n"
       << "  -r, --rate <hz>        Sample rate, 8000-192000 (default: 48000)\n"
       << "  -l, --loops <count>    Song L repeats: 0=forever (default), 1-100=finite\n"
       << "  -h, --help             Show this help\n"
@@ -299,12 +299,13 @@ Options parseArguments(int argc, char* argv[]) {
       asciiLower(options.input.extension().string()) != ".mdr") {
     throw CliError("--destination with play requires an MDR file");
   }
-  const bool mdrPlay =
-      options.command == "play" &&
+  const bool mdrSoundFont =
+      (options.command == "play" || options.command == "render") &&
       asciiLower(options.input.extension().string()) == ".mdr";
   if (!options.soundFont.empty() && options.command != "midi-synth" &&
-      !mdrPlay) {
-    throw CliError("--soundfont can only be used with midi-synth or MDR play");
+      !mdrSoundFont) {
+    throw CliError(
+        "--soundfont can only be used with midi-synth, MDR play, or MDR render");
   }
   if (!options.midiDestination.empty() && !options.soundFont.empty()) {
     throw CliError(
@@ -859,6 +860,70 @@ void renderSong(Song& song, const fs::path& outputPath) {
   }
 }
 
+std::int16_t mixSample(std::int32_t left, std::int32_t right) {
+  const std::int32_t mixed = left + right;
+  if (mixed > 32767) {
+    return 32767;
+  }
+  if (mixed < -32768) {
+    return -32768;
+  }
+  return static_cast<std::int16_t>(mixed);
+}
+
+void renderHybridSong(Song& hardwareSong, const mpxadrv::MidiSequence& sequence,
+                      const fs::path& soundFont, const fs::path& outputPath) {
+  if (soundFont.empty() ||
+      asciiLower(soundFont.extension().string()) != ".sf2") {
+    throw CliError(
+        "hybrid MDR render requires --soundfont <file.sf2> (FluidSynth offline)");
+  }
+  const int rate = hardwareSong.rate();
+  const int channels = hardwareSong.channels();
+  if (channels < 1 || channels > 2) {
+    throw CliError("unsupported hybrid render channel count");
+  }
+
+  mpxadrv::OfflineFluidRenderer midi(soundFont, rate);
+  midi.prepare(sequence);
+
+  WavWriter writer(outputPath, rate, 2);
+  std::vector<std::int16_t> fmBuffer(
+      kFramesPerBuffer * static_cast<std::size_t>(channels));
+  std::vector<std::int16_t> midiBuffer(kFramesPerBuffer * 2);
+  std::vector<std::int16_t> mixBuffer(kFramesPerBuffer * 2);
+  std::uint64_t remaining = hardwareSong.totalFrames();
+
+  while (remaining > 0 && !gInterrupted) {
+    const int frames = static_cast<int>(
+        std::min<std::uint64_t>(kFramesPerBuffer, remaining));
+    const int hasMore = hardwareSong.render(fmBuffer.data(), frames);
+    midi.render(midiBuffer.data(), frames);
+    for (int frame = 0; frame < frames; ++frame) {
+      const std::int16_t fmLeft =
+          channels == 1 ? fmBuffer[static_cast<std::size_t>(frame)]
+                        : fmBuffer[static_cast<std::size_t>(frame) * 2];
+      const std::int16_t fmRight =
+          channels == 1
+              ? fmLeft
+              : fmBuffer[static_cast<std::size_t>(frame) * 2 + 1];
+      mixBuffer[static_cast<std::size_t>(frame) * 2] = mixSample(
+          fmLeft, midiBuffer[static_cast<std::size_t>(frame) * 2]);
+      mixBuffer[static_cast<std::size_t>(frame) * 2 + 1] = mixSample(
+          fmRight, midiBuffer[static_cast<std::size_t>(frame) * 2 + 1]);
+    }
+    writer.write(mixBuffer.data(), static_cast<std::size_t>(frames));
+    remaining -= static_cast<std::uint64_t>(frames);
+    if (!hasMore) {
+      break;
+    }
+  }
+  writer.finalize();
+  if (gInterrupted) {
+    throw CliError("rendering interrupted; partial WAV file was kept");
+  }
+}
+
 fs::path locateMdrPdx(const mpxadrv::MdrFile& mdr, const fs::path& input,
                       const fs::path& extraDirectory) {
   if (mdr.pdxName.empty()) {
@@ -1054,7 +1119,8 @@ int processMdr(const Options& options) {
     return 0;
   }
 
-  if (options.command == "play" && !sequence.tracks.empty() &&
+  if ((options.command == "play" || options.command == "render") &&
+      !sequence.tracks.empty() &&
       mpxadrv::countSeparableHardwareTracks(mdr) > 0) {
     try {
       const std::vector<std::uint8_t> mdx =
@@ -1066,6 +1132,30 @@ int processMdr(const Options& options) {
         throw mpxadrv::MdrError(
             "hybrid MDR hardware tracks require their PCM sample bank");
       }
+      if (options.command == "render") {
+        const fs::path soundFont = checkedSoundFont(options.soundFont);
+        if (soundFont.empty() ||
+            asciiLower(soundFont.extension().string()) != ".sf2") {
+          throw CliError(
+              "hybrid MDR render requires --soundfont <file.sf2> "
+              "(FluidSynth offline)");
+        }
+        TemporaryDirectory temporary;
+        const fs::path mdxPath = writeTemporaryMdx(temporary, input, mdx);
+        Options compatible = options;
+        compatible.input = mdxPath;
+        compatible.pdxDirectory =
+            pdx.empty() ? options.pdxDirectory : pdx.parent_path();
+        Song hardwareSong(compatible);
+        printMidiWarnings(sequence);
+        std::cout << (title.empty() ? input.filename().string() : title)
+                  << "  [" << formatDuration(durationSeconds) << "]\n"
+                  << "Rendering MDR MIDI + FM/PCM to WAV...\n";
+        renderHybridSong(hardwareSong, sequence, soundFont, options.output);
+        std::cout << "Wrote " << fs::absolute(options.output).string() << '\n';
+        return 0;
+      }
+
       TemporaryDirectory temporary;
       const fs::path mdxPath = writeTemporaryMdx(temporary, input, mdx);
       Options compatible = options;
@@ -1134,13 +1224,49 @@ int processMdr(const Options& options) {
       return 0;
     } catch (const mpxadrv::MdrError& hardwareError) {
       std::cerr << "mpxadrv: MDR warning: " << hardwareError.what()
-                << "; playing MIDI only\n";
+                << "; "
+                << (options.command == "render" ? "rendering" : "playing")
+                << " MIDI only\n";
     }
   }
 
   if (options.command == "render") {
-    throw CliError(
-        "mixed MDR WAV rendering is not available; export or play the MIDI portion");
+    if (sequence.tracks.empty()) {
+      throw CliError("the MDR file contains no convertible MIDI events");
+    }
+    const fs::path soundFont = checkedSoundFont(options.soundFont);
+    if (soundFont.empty() ||
+        asciiLower(soundFont.extension().string()) != ".sf2") {
+      throw CliError(
+          "MDR MIDI WAV rendering requires --soundfont <file.sf2>");
+    }
+    printMidiWarnings(sequence);
+    std::cout << (title.empty() ? input.filename().string() : title) << "  ["
+              << formatDuration(durationSeconds) << "]\n"
+              << "Rendering MDR MIDI to WAV...\n";
+    // Finite render: rebuild FM-less duration from the already-expanded
+    // sequence and write FluidSynth alone as stereo PCM.
+    mpxadrv::OfflineFluidRenderer midi(soundFont, options.rate);
+    midi.prepare(sequence);
+    WavWriter writer(options.output, options.rate, 2);
+    const std::uint64_t totalFrames =
+        (durationUs * static_cast<std::uint64_t>(options.rate) + 999'999ull) /
+        1'000'000ull;
+    std::vector<std::int16_t> buffer(kFramesPerBuffer * 2);
+    std::uint64_t remaining = totalFrames;
+    while (remaining > 0 && !gInterrupted) {
+      const int frames = static_cast<int>(
+          std::min<std::uint64_t>(kFramesPerBuffer, remaining));
+      midi.render(buffer.data(), frames);
+      writer.write(buffer.data(), static_cast<std::size_t>(frames));
+      remaining -= static_cast<std::uint64_t>(frames);
+    }
+    writer.finalize();
+    if (gInterrupted) {
+      throw CliError("rendering interrupted; partial WAV file was kept");
+    }
+    std::cout << "Wrote " << fs::absolute(options.output).string() << '\n';
+    return 0;
   }
   if (sequence.tracks.empty()) {
     throw CliError("the MDR file contains no convertible MIDI events");

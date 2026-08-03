@@ -109,6 +109,14 @@ Render it to WAV:
 ./build/mpxadrv render song.mdx -o song.wav
 ```
 
+Hybrid MDR songs can be rendered offline to a single stereo WAV (FM/PCM +
+FluidSynth MIDI). An SF2 SoundFont is required:
+
+```sh
+./build/mpxadrv render song.mdr -o song.wav \
+  --soundfont SoundFonts/Roland_SC-55.sf2 -l 1
+```
+
 Export MADRV MIDI tracks to a format-1 Standard MIDI File:
 
 ```sh
@@ -207,7 +215,7 @@ Useful options:
 -r, --rate <hz>        sample rate (default: 48000)
 -l, --loops <count>    song L repeats: 0=forever (default), 1-100=finite
     --destination <id> CoreMIDI USB/physical out (play, midi-play)
-    --soundfont <path>  SF2/DLS soft synth (default for MDR play)
+    --soundfont <path>  SF2/DLS soft synth (play, render, midi-synth)
 ```
 
 Run `./build/mpxadrv --help` for the complete command reference.
@@ -262,8 +270,8 @@ starts it in sync with the software MIDI synthesizer. A tempo-conductor track
 keeps both sides aligned through tempo changes and song loops. An SC-55-style
 SF2 bank can be selected with `play song.mdr --soundfont bank.sf2`; custom
 banks are rendered by FluidSynth. The built-in macOS DLS bank is GM-compatible
-but does not reproduce every SC-55 timbre.
-Mixed FM/PCM + MIDI WAV rendering is not yet available. An MDR with no MIDI
-events uses the same 9/16-track MDX compatibility path for playback and WAV
-rendering; if its PDX/TDX dependencies are missing, the command warns and
-continues with its FM portion.
+but does not reproduce every SC-55 timbre. The same SF2 path is used by
+`render song.mdr --soundfont bank.sf2` to mix FM/PCM and MIDI into one WAV
+offline. An MDR with no MIDI events uses the same 9/16-track MDX compatibility
+path for playback and WAV rendering; if its PDX/TDX dependencies are missing,
+the command warns and continues with its FM portion.

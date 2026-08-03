@@ -202,21 +202,27 @@ class SoftwareSynthGraph {
 
 class FluidSynthGraph {
  public:
-  explicit FluidSynthGraph(const std::filesystem::path& soundFont) {
+  FluidSynthGraph(const std::filesystem::path& soundFont, double sampleRate,
+                  bool startDriver) {
     settings_ = new_fluid_settings();
     if (settings_ == nullptr) {
       throw MidiError("new_fluid_settings failed");
     }
     try {
-      fluid_settings_setstr(settings_, "audio.driver", "coreaudio");
-      // Retain enough buffering for dense arrangements. Hybrid playback
-      // compensates for this known queue depth by sending MIDI ahead of the
-      // FM/PCM AudioQueue instead of risking underruns with a tiny buffer.
-      fluid_settings_setint(settings_, "audio.period-size", 64);
-      fluid_settings_setint(settings_, "audio.periods", 16);
+      fluid_settings_setnum(settings_, "synth.sample-rate", sampleRate);
       fluid_settings_setint(settings_, "synth.polyphony", 512);
-      fluid_settings_setnum(settings_, "synth.sample-rate", 48000.0);
       fluid_settings_setnum(settings_, "synth.gain", 0.5);
+      if (!startDriver) {
+        // Offline hybrid WAV render: sample clock, no realtime pinning.
+        fluid_settings_setint(settings_, "synth.lock-memory", 0);
+      } else {
+        fluid_settings_setstr(settings_, "audio.driver", "coreaudio");
+        // Retain enough buffering for dense arrangements. Hybrid playback
+        // compensates for this known queue depth by sending MIDI ahead of the
+        // FM/PCM AudioQueue instead of risking underruns with a tiny buffer.
+        fluid_settings_setint(settings_, "audio.period-size", 64);
+        fluid_settings_setint(settings_, "audio.periods", 16);
+      }
       synth_ = new_fluid_synth(settings_);
       if (synth_ == nullptr) {
         throw MidiError("new_fluid_synth failed");
@@ -229,15 +235,20 @@ class FluidSynthGraph {
       // note-ons are additionally boosted in send().
       fluid_synth_cc(synth_, kRhythmChannel, 7, 127);
       fluid_synth_cc(synth_, kRhythmChannel, 11, 127);
-      driver_ = new_fluid_audio_driver(settings_, synth_);
-      if (driver_ == nullptr) {
-        throw MidiError("FluidSynth could not open the Core Audio output");
+      if (startDriver) {
+        driver_ = new_fluid_audio_driver(settings_, synth_);
+        if (driver_ == nullptr) {
+          throw MidiError("FluidSynth could not open the Core Audio output");
+        }
       }
     } catch (...) {
       cleanup();
       throw;
     }
   }
+
+  explicit FluidSynthGraph(const std::filesystem::path& soundFont)
+      : FluidSynthGraph(soundFont, 48000.0, true) {}
 
   FluidSynthGraph(const FluidSynthGraph&) = delete;
   FluidSynthGraph& operator=(const FluidSynthGraph&) = delete;
@@ -330,6 +341,13 @@ class FluidSynthGraph {
       fluid_synth_cc(synth_, channel, 123, 0);
       fluid_synth_cc(synth_, channel, 120, 0);
     }
+  }
+
+  void writeInterleavedStereo(std::int16_t* interleaved, int frames) {
+    if (frames <= 0) {
+      return;
+    }
+    fluid_synth_write_s16(synth_, frames, interleaved, 0, 2, interleaved, 1, 2);
   }
 
  private:
@@ -455,6 +473,87 @@ void playSoftwareSynthAt(
     std::chrono::steady_clock::time_point start, bool infinite) {
   SoftwareSynthPlayer player(soundFont);
   player.playAt(sequence, shouldStop, start, infinite);
+}
+
+class OfflineFluidRenderer::Impl {
+ public:
+  Impl(const std::filesystem::path& soundFont, int sampleRate)
+      : sampleRate_(sampleRate),
+        fluid_(soundFont, static_cast<double>(sampleRate), false) {
+    if (sampleRate < 8'000 || sampleRate > 192'000) {
+      throw MidiError("offline FluidSynth sample rate is out of range");
+    }
+  }
+
+  void prepare(const MidiSequence& sequence) {
+    events_ = scheduleMidiEvents(sequence, sampleRate_);
+    if (events_.empty()) {
+      throw MidiError("the song contains no events for offline FluidSynth render");
+    }
+    eventIndex_ = 0;
+    samplePosition_ = 0;
+  }
+
+  void render(std::int16_t* interleavedStereo, int frames) {
+    if (interleavedStereo == nullptr || frames <= 0) {
+      return;
+    }
+    int produced = 0;
+    while (produced < frames) {
+      const std::uint64_t nowUs =
+          (samplePosition_ * 1'000'000ull) /
+          static_cast<std::uint64_t>(sampleRate_);
+      while (eventIndex_ < events_.size() &&
+             events_[eventIndex_].microseconds <= nowUs) {
+        fluid_.send(events_[eventIndex_].bytes);
+        ++eventIndex_;
+      }
+
+      std::uint64_t nextBoundaryUs = nowUs + 1'000'000ull;
+      if (eventIndex_ < events_.size()) {
+        nextBoundaryUs = events_[eventIndex_].microseconds;
+      }
+      const std::uint64_t nextBoundarySample =
+          (nextBoundaryUs * static_cast<std::uint64_t>(sampleRate_) +
+           999'999ull) /
+          1'000'000ull;
+      int chunk = frames - produced;
+      if (eventIndex_ < events_.size() &&
+          nextBoundarySample > samplePosition_) {
+        const std::uint64_t untilEvent = nextBoundarySample - samplePosition_;
+        if (untilEvent < static_cast<std::uint64_t>(chunk)) {
+          chunk = static_cast<int>(untilEvent);
+        }
+      }
+      if (chunk <= 0) {
+        chunk = 1;
+      }
+      fluid_.writeInterleavedStereo(interleavedStereo + produced * 2, chunk);
+      samplePosition_ += static_cast<std::uint64_t>(chunk);
+      produced += chunk;
+    }
+  }
+
+ private:
+  int sampleRate_ = 0;
+  FluidSynthGraph fluid_;
+  std::vector<ScheduledMidiEvent> events_;
+  std::size_t eventIndex_ = 0;
+  std::uint64_t samplePosition_ = 0;
+};
+
+OfflineFluidRenderer::OfflineFluidRenderer(
+    const std::filesystem::path& soundFont, int sampleRate)
+    : impl_(std::make_unique<Impl>(soundFont, sampleRate)) {}
+
+OfflineFluidRenderer::~OfflineFluidRenderer() = default;
+
+void OfflineFluidRenderer::prepare(const MidiSequence& sequence) {
+  impl_->prepare(sequence);
+}
+
+void OfflineFluidRenderer::render(std::int16_t* interleavedStereo, int frames) {
+  impl_->render(interleavedStereo, frames);
 }
 
 }  // namespace mpxadrv

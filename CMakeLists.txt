@@ -120,6 +120,14 @@ if(BUILD_TESTING)
   target_include_directories(midi_tests PRIVATE src)
   target_compile_options(midi_tests PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME midi_conversion COMMAND midi_tests)
+
+  add_test(
+    NAME cli_smoke
+    COMMAND bash "${CMAKE_SOURCE_DIR}/tests/cli_smoke.sh"
+  )
+  set_tests_properties(cli_smoke PROPERTIES
+    ENVIRONMENT "MPXADRV_BIN=$<TARGET_FILE:mpxadrv>"
+  )
 endif()
 
 install(TARGETS mpxadrv RUNTIME DESTINATION bin)
