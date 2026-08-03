@@ -7,6 +7,7 @@ repo_dir=${script_path:h:h}
 music_dir=${1:-$PWD}
 player_override=""
 soundfont_override=""
+destination_override="${MPXADRV_DESTINATION:-}"
 
 if [[ -n "${MPXADRV_BIN:-}" ]]; then
   player_override=${MPXADRV_BIN:A}
@@ -36,15 +37,22 @@ else
   exit 1
 fi
 
+if [[ -n "$destination_override" && -n "$soundfont_override" ]]; then
+  print -u2 -- "MPXADRV_DESTINATION と MPXADRV_SOUNDFONT は同時に指定できません。"
+  exit 1
+fi
+
 soundfont=""
-if [[ -n "$soundfont_override" ]]; then
-  if [[ ! -f "$soundfont_override" ]]; then
-    print -u2 -- "SoundFontが見つかりません: $soundfont_override"
-    exit 1
+if [[ -z "$destination_override" ]]; then
+  if [[ -n "$soundfont_override" ]]; then
+    if [[ ! -f "$soundfont_override" ]]; then
+      print -u2 -- "SoundFontが見つかりません: $soundfont_override"
+      exit 1
+    fi
+    soundfont=$soundfont_override
+  elif [[ -f "$repo_dir/SoundFonts/Roland_SC-55.sf2" ]]; then
+    soundfont="$repo_dir/SoundFonts/Roland_SC-55.sf2"
   fi
-  soundfont=$soundfont_override
-elif [[ -f "$repo_dir/SoundFonts/Roland_SC-55.sf2" ]]; then
-  soundfont="$repo_dir/SoundFonts/Roland_SC-55.sf2"
 fi
 
 while true; do
@@ -54,7 +62,9 @@ while true; do
   print
   print -- "mpxadrv 選曲メニュー"
   print -- "フォルダー: $PWD"
-  if [[ -n "$soundfont" ]]; then
+  if [[ -n "$destination_override" ]]; then
+    print -- "MIDI出力: CoreMIDI ($destination_override)"
+  elif [[ -n "$soundfont" ]]; then
     print -- "SoundFont: ${soundfont:t}"
   else
     print -- "SoundFont: macOS標準音源"
@@ -89,8 +99,12 @@ while true; do
 
   selected=${files[choice]}
   play_command=( "$player" play "$selected" )
-  if [[ "${(L)selected}" == *.mdr && -n "$soundfont" ]]; then
-    play_command+=( --soundfont "$soundfont" )
+  if [[ "${(L)selected}" == *.mdr ]]; then
+    if [[ -n "$destination_override" ]]; then
+      play_command+=( --destination "$destination_override" )
+    elif [[ -n "$soundfont" ]]; then
+      play_command+=( --soundfont "$soundfont" )
+    fi
   fi
 
   print

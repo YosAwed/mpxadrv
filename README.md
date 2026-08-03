@@ -67,8 +67,10 @@ scripts/mpxadrv-player.command /path/to/music
 ```
 
 The script automatically uses `build/mpxadrv` and the local ignored
-`SoundFonts/Roland_SC-55.sf2` when available. Override either path with
-`MPXADRV_BIN` or `MPXADRV_SOUNDFONT`.
+`SoundFonts/Roland_SC-55.sf2` when available. Override the binary or SoundFont
+with `MPXADRV_BIN` or `MPXADRV_SOUNDFONT`. To send MIDI to a USB / physical
+module instead of the software synth, set `MPXADRV_DESTINATION` to a
+`midi-list` index or destination name (this disables the SoundFont path).
 
 ## Usage
 
@@ -113,16 +115,21 @@ Export MADRV MIDI tracks to a format-1 Standard MIDI File:
 ./build/mpxadrv midi song.mdr -o song.mid
 ```
 
-List CoreMIDI destinations and send a song to one explicitly:
+List CoreMIDI destinations and send MIDI to a USB / physical module:
 
 ```sh
 ./build/mpxadrv midi-list
+./build/mpxadrv play song.mdr --destination 0
 ./build/mpxadrv midi-play song.mdr --destination 0
 ```
 
-`--destination` also accepts an exact name or an unambiguous part of a name.
-`midi-play` never chooses or opens an output implicitly. On interruption it
-sends All Notes Off and All Sound Off on all 16 channels.
+`--destination` accepts an index from `midi-list`, an exact name, or an
+unambiguous part of a name. With `play`, hybrid MDR songs keep FM/PCM on the
+Mac and route only the MIDI tracks to the selected CoreMIDI output. Without
+`--destination`, MDR play uses the built-in software synthesizer (SF2 via
+`--soundfont`, or macOS DLSMusicDevice). `--destination` and `--soundfont`
+cannot be combined. On interruption the player sends All Notes Off and All
+Sound Off on all 16 channels.
 
 Play MADRV MIDI tracks directly through the software synthesizer included with
 macOS—no external MIDI destination or IAC setup is required:
@@ -157,11 +164,19 @@ shasum -a 256 SoundFonts/Roland_SC-55.sf2
 
 The expected SHA-256 is
 `fca3e514b635a21789d4224e84865d2954a2a914d46b64aa8219ddb565c44869`.
-Use it for hybrid MDR playback with:
+Use it for hybrid MDR playback with the software synthesizer:
 
 ```sh
 ./build/mpxadrv play song.mdr \
   --soundfont SoundFonts/Roland_SC-55.sf2
+```
+
+Or send the MIDI half to a connected SC-55 / USB MIDI interface while FM/PCM
+still play locally:
+
+```sh
+./build/mpxadrv midi-list
+./build/mpxadrv play song.mdr --destination 0
 ```
 
 ScummVM identifies the file as `Copyright (c) 2015 deemster`, licensed under
@@ -190,9 +205,9 @@ Useful options:
 -p, --pdx-dir <path>   additional PDX search directory
     --tdx-file <path>  override the song's PDX with a TDX definition
 -r, --rate <hz>        sample rate (default: 48000)
--l, --loops <count>    number of loops (default: 1)
-    --destination <id> CoreMIDI destination index or name (midi-play only)
-    --soundfont <path>  SF2 or DLS bank (midi-synth or MDR play)
+-l, --loops <count>    song L repeats: 0=forever (default), 1-100=finite
+    --destination <id> CoreMIDI USB/physical out (play, midi-play)
+    --soundfont <path>  SF2/DLS soft synth (default for MDR play)
 ```
 
 Run `./build/mpxadrv --help` for the complete command reference.

@@ -189,8 +189,8 @@ void printUsage(std::ostream& stream) {
       << "  -o, --output <path>    WAV, MIDI, or compiled PDX output path\n"
       << "  -p, --pdx-dir <path>   Additional PDX search directory\n"
       << "      --tdx-file <path>  Override the song's PDX with a TDX definition\n"
-      << "      --destination <id> CoreMIDI destination index or name\n"
-      << "      --soundfont <path>  SF2 or DLS bank for midi-synth/MDR play\n"
+      << "      --destination <id> CoreMIDI USB/physical out (play, midi-play)\n"
+      << "      --soundfont <path>  SF2/DLS soft synth (default for MDR play)\n"
       << "  -r, --rate <hz>        Sample rate, 8000-192000 (default: 48000)\n"
       << "  -l, --loops <count>    Song L repeats: 0=forever (default), 1-100=finite\n"
       << "  -h, --help             Show this help\n"
@@ -288,11 +288,16 @@ Options parseArguments(int argc, char* argv[]) {
       !options.output.empty()) {
     throw CliError("--output can only be used with render, midi, or tdx");
   }
-  if (!options.midiDestination.empty() && options.command != "midi-play") {
-    throw CliError("--destination can only be used with midi-play");
+  if (!options.midiDestination.empty() && options.command != "midi-play" &&
+      options.command != "play") {
+    throw CliError("--destination can only be used with play or midi-play");
   }
   if (options.command == "midi-play" && options.midiDestination.empty()) {
     throw CliError("midi-play requires --destination <index-or-name>");
+  }
+  if (!options.midiDestination.empty() && options.command == "play" &&
+      asciiLower(options.input.extension().string()) != ".mdr") {
+    throw CliError("--destination with play requires an MDR file");
   }
   const bool mdrPlay =
       options.command == "play" &&
@@ -300,6 +305,11 @@ Options parseArguments(int argc, char* argv[]) {
   if (!options.soundFont.empty() && options.command != "midi-synth" &&
       !mdrPlay) {
     throw CliError("--soundfont can only be used with midi-synth or MDR play");
+  }
+  if (!options.midiDestination.empty() && !options.soundFont.empty()) {
+    throw CliError(
+        "--destination and --soundfont cannot be used together; "
+        "choose external MIDI or the software synthesizer");
   }
   return options;
 }
@@ -1063,16 +1073,31 @@ int processMdr(const Options& options) {
       compatible.pdxDirectory =
           pdx.empty() ? options.pdxDirectory : pdx.parent_path();
       Song hardwareSong(compatible);
-      const fs::path soundFont = checkedSoundFont(options.soundFont);
       printMidiWarnings(sequence);
+      const bool useExternalMidi = !options.midiDestination.empty();
       std::cout << (title.empty() ? input.filename().string() : title) << "  ["
                 << formatDuration(durationSeconds) << "]\n"
-                << "Playing MDR MIDI + FM/PCM... press Ctrl-C to stop.\n";
+                << "Playing MDR "
+                << (useExternalMidi ? "CoreMIDI + FM/PCM"
+                                    : "MIDI + FM/PCM")
+                << "... press Ctrl-C to stop.\n";
 
-      mpxadrv::SoftwareSynthPlayer midiPlayer(soundFont);
       // Match mdxmini's per-tick sample truncation so MIDI does not creep
       // ahead of FM/PCM over a multi-minute hybrid song.
-      midiPlayer.prepare(sequence, loopForever, hardwareSong.rate());
+      std::unique_ptr<mpxadrv::SoftwareSynthPlayer> softMidi;
+      std::unique_ptr<mpxadrv::CoreMidiPlayer> coreMidi;
+      std::chrono::microseconds midiLead{0};
+      if (useExternalMidi) {
+        coreMidi = std::make_unique<mpxadrv::CoreMidiPlayer>(
+            options.midiDestination);
+        coreMidi->prepare(sequence, loopForever, hardwareSong.rate());
+        midiLead = coreMidi->latencyCompensation();
+      } else {
+        softMidi = std::make_unique<mpxadrv::SoftwareSynthPlayer>(
+            checkedSoundFont(options.soundFont));
+        softMidi->prepare(sequence, loopForever, hardwareSong.rate());
+        midiLead = softMidi->latencyCompensation();
+      }
       AudioPlayer player(hardwareSong);
       player.prepare();
       std::atomic<bool> hybridStop{false};
@@ -1081,9 +1106,14 @@ int processMdr(const Options& options) {
                          std::chrono::milliseconds(150);
       std::thread midiThread([&] {
         try {
-          midiPlayer.playPreparedAt(
-              [&] { return gInterrupted != 0 || hybridStop.load(); },
-              start - midiPlayer.latencyCompensation());
+          const auto shouldStop = [&] {
+            return gInterrupted != 0 || hybridStop.load();
+          };
+          if (coreMidi) {
+            coreMidi->playPreparedAt(shouldStop, start - midiLead);
+          } else {
+            softMidi->playPreparedAt(shouldStop, start - midiLead);
+          }
         } catch (...) {
           midiFailure = std::current_exception();
           hybridStop.store(true);
@@ -1124,8 +1154,8 @@ int processMdr(const Options& options) {
               << "Wrote " << fs::absolute(options.output).string() << '\n';
     return 0;
   }
-  if (options.command == "midi-play") {
-    std::cout << "Sending MDR MIDI... press Ctrl-C to stop.\n";
+  if (options.command == "midi-play" || !options.midiDestination.empty()) {
+    std::cout << "Sending MDR MIDI to CoreMIDI... press Ctrl-C to stop.\n";
     mpxadrv::playMidiSequence(sequence, options.midiDestination,
                               [] { return gInterrupted != 0; }, loopForever);
     std::cout << (gInterrupted ? "Stopped.\n" : "Finished.\n");

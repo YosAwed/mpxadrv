@@ -12,6 +12,7 @@
 #include <sstream>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace mpxadrv {
 namespace {
@@ -155,7 +156,87 @@ void allNotesOff(MIDIPortRef port, MIDIEndpointRef destination) noexcept {
 
 }  // namespace
 
+class CoreMidiPlayer::Impl {
+ public:
+  explicit Impl(const std::string& destinationSelector) {
+    if (destinationSelector.empty()) {
+      throw MidiError("--destination requires an index or name");
+    }
+    // Create the client first; destination enumeration is unreliable without it.
+    requireMidi(MIDIClientCreate(CFSTR("mpxadrv"), nullptr, nullptr,
+                                 &handles.client),
+                "MIDIClientCreate");
+    requireMidi(MIDIOutputPortCreate(handles.client, CFSTR("mpxadrv output"),
+                                     &handles.port),
+                "MIDIOutputPortCreate");
+    destination = resolveDestination(destinationSelector);
+  }
+
+  void send(const std::vector<std::uint8_t>& message) {
+    sendMessage(handles.port, destination, message);
+  }
+
+  void silence() noexcept { allNotesOff(handles.port, destination); }
+
+  MidiHandles handles;
+  MIDIEndpointRef destination = 0;
+  std::vector<ScheduledMidiEvent> events;
+  std::uint64_t loopStartUs = std::numeric_limits<std::uint64_t>::max();
+  bool infinite = false;
+};
+
+CoreMidiPlayer::CoreMidiPlayer(const std::string& destinationSelector)
+    : impl_(std::make_unique<Impl>(destinationSelector)) {}
+
+CoreMidiPlayer::~CoreMidiPlayer() = default;
+
+std::chrono::microseconds CoreMidiPlayer::latencyCompensation() const {
+  return std::chrono::microseconds(0);
+}
+
+void CoreMidiPlayer::prepare(const MidiSequence& sequence, bool infinite,
+                             int syncSampleRate) {
+  impl_->events = scheduleMidiEvents(sequence, syncSampleRate);
+  if (impl_->events.empty()) {
+    throw MidiError("the song contains no events for CoreMIDI output");
+  }
+  impl_->infinite = infinite && sequence.hasSongLoop;
+  impl_->loopStartUs =
+      impl_->infinite
+          ? midiTickMicroseconds(sequence, sequence.loopStartTick,
+                                 syncSampleRate)
+          : std::numeric_limits<std::uint64_t>::max();
+}
+
+void CoreMidiPlayer::playAt(const MidiSequence& sequence,
+                            const std::function<bool()>& shouldStop,
+                            std::chrono::steady_clock::time_point start,
+                            bool infinite, int syncSampleRate) {
+  prepare(sequence, infinite, syncSampleRate);
+  playPreparedAt(shouldStop, start);
+}
+
+void CoreMidiPlayer::playPreparedAt(
+    const std::function<bool()>& shouldStop,
+    std::chrono::steady_clock::time_point start) {
+  try {
+    playScheduledMidiEvents(
+        impl_->events, impl_->loopStartUs, impl_->infinite, start, shouldStop,
+        [&](const std::vector<std::uint8_t>& bytes) { impl_->send(bytes); });
+  } catch (...) {
+    impl_->silence();
+    throw;
+  }
+  impl_->silence();
+}
+
 std::vector<std::string> midiDestinationNames() {
+  MidiHandles handles;
+  // A live client makes destination discovery reliable across USB plug events.
+  if (MIDIClientCreate(CFSTR("mpxadrv-list"), nullptr, nullptr,
+                       &handles.client) != noErr) {
+    return {};
+  }
   std::vector<std::string> names;
   const ItemCount count = MIDIGetNumberOfDestinations();
   names.reserve(static_cast<std::size_t>(count));
@@ -168,37 +249,10 @@ std::vector<std::string> midiDestinationNames() {
 void playMidiSequence(const MidiSequence& sequence,
                       const std::string& destinationSelector,
                       const std::function<bool()>& shouldStop, bool infinite) {
-  if (destinationSelector.empty()) {
-    throw MidiError("midi-play requires --destination <index-or-name>");
-  }
-  const MIDIEndpointRef destination = resolveDestination(destinationSelector);
-  MidiHandles handles;
-  requireMidi(MIDIClientCreate(CFSTR("mpxadrv"), nullptr, nullptr,
-                               &handles.client),
-              "MIDIClientCreate");
-  requireMidi(MIDIOutputPortCreate(handles.client, CFSTR("mpxadrv output"),
-                                   &handles.port),
-              "MIDIOutputPortCreate");
-
-  const std::vector<ScheduledMidiEvent> events = scheduleMidiEvents(sequence);
-  const bool loopForever = infinite && sequence.hasSongLoop;
-  const std::uint64_t loopStartUs =
-      loopForever ? midiTickMicroseconds(sequence, sequence.loopStartTick)
-                  : std::numeric_limits<std::uint64_t>::max();
-
-  const auto start = std::chrono::steady_clock::now() +
-                     std::chrono::milliseconds(100);
-  try {
-    playScheduledMidiEvents(
-        events, loopStartUs, loopForever, start, shouldStop,
-        [&](const std::vector<std::uint8_t>& bytes) {
-          sendMessage(handles.port, destination, bytes);
-        });
-  } catch (...) {
-    allNotesOff(handles.port, destination);
-    throw;
-  }
-  allNotesOff(handles.port, destination);
+  CoreMidiPlayer player(destinationSelector);
+  player.prepare(sequence, infinite);
+  player.playPreparedAt(shouldStop, std::chrono::steady_clock::now() +
+                                        std::chrono::milliseconds(100));
 }
 
 }  // namespace mpxadrv
