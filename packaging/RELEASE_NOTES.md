@@ -2,6 +2,7 @@ Install with Homebrew:
 
 ```sh
 brew tap YosAwed/mpxadrv
+brew trust YosAwed/mpxadrv
 brew install mpxadrv
 ```
 
