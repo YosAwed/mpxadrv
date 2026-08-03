@@ -7,10 +7,7 @@ render MDX and FM/PCM-only MDR songs directly to 16-bit PCM WAV files or export
 MIDI to Standard MIDI Files. MADRV `.TDX` bank definitions can be compiled or
 loaded transparently during MDX playback.
 
-The original Human68k source and reference music under `Reference/` are used
-only as local compatibility references. They are intentionally excluded from
-Git because the supplied `MADRVSRC/README.DOC` prohibits redistribution of the
-source.
+The original Human68k source and reference music are used only as local compatibility references. 
 
 At startup the CLI preserves the original compiler attribution and identifies
 the derivative macOS implementation separately:
@@ -83,8 +80,7 @@ To select songs without typing each filename, change to a folder containing
 MDR/MDX files and run the terminal menu:
 
 ```sh
-cd Reference/MDR
-../../scripts/mpxadrv-player.command
+./scripts/mpxadrv-player.command
 ```
 
 The menu clears the screen, pages the song list to fit the terminal height,
