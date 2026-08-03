@@ -32,25 +32,7 @@ jobs:
           mkdir -p "${stage}/bin" "${stage}/share/doc/mpxadrv"
           cmake --install build --prefix "${PWD}/${stage}"
           cp README.md "${stage}/share/doc/mpxadrv/"
-          cat > "${stage}/INSTALL.txt" <<'EOF'
-mpxadrv macOS binary package
-============================
-
-This binary is dynamically linked against Homebrew's mdxmini and
-FluidSynth. Install those first:
-
-  brew install mdxmini fluid-synth
-
-Then put bin/mpxadrv and bin/mpxadrv-player on your PATH, or run
-them by absolute path.
-
-Prefer a source install when possible:
-
-  brew install --HEAD --formula \
-    https://raw.githubusercontent.com/YosAwed/mpxadrv/main/Formula/mpxadrv.rb
-
-SoundFonts are not included; see README.md for an optional SC-55 bank.
-EOF
+          cp packaging/INSTALL.txt "${stage}/INSTALL.txt"
           tar -czf "${stage}.tar.gz" "${stage}"
           shasum -a 256 "${stage}.tar.gz" | tee "${stage}.tar.gz.sha256"
           echo "ASSET=${stage}.tar.gz" >> "$GITHUB_ENV"
@@ -60,23 +42,8 @@ EOF
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="$(cat <<EOF
-          ## mpxadrv ${GITHUB_REF_NAME}
-
-          macOS binary (Apple Silicon runner) linked against Homebrew
-          \`mdxmini\` and \`fluid-synth\`. Install those with Homebrew before
-          running the binary, or prefer the formula:
-
-          \`\`\`sh
-          brew install --HEAD --formula \\
-            https://raw.githubusercontent.com/YosAwed/mpxadrv/main/Formula/mpxadrv.rb
-          \`\`\`
-
-          See \`INSTALL.txt\` inside the archive and the repository README.
-          EOF
-          )"
           gh release create "$GITHUB_REF_NAME" \
             --title "mpxadrv ${GITHUB_REF_NAME}" \
-            --notes "$notes" \
+            --notes-file packaging/RELEASE_NOTES.md \
             "$ASSET" \
             "$ASSET_SUM"
