@@ -131,3 +131,7 @@ if(BUILD_TESTING)
 endif()
 
 install(TARGETS mpxadrv RUNTIME DESTINATION bin)
+install(PROGRAMS scripts/mpxadrv-player.command
+  DESTINATION bin
+  RENAME mpxadrv-player
+)

@@ -38,17 +38,50 @@ brew install cmake mdxmini fluid-synth
 LGPL-2.1-or-later. A distributed build of this application must comply with
 those licenses. This repository does not copy or vendor either dependency.
 
-## Build
+## Install
+
+### Homebrew (recommended)
+
+Build and install from this repository's formula (HEAD of `main`):
+
+```sh
+brew install --HEAD --formula \
+  https://raw.githubusercontent.com/YosAwed/mpxadrv/main/Formula/mpxadrv.rb
+```
+
+Or from a local clone:
+
+```sh
+brew install --HEAD --formula ./Formula/mpxadrv.rb
+```
+
+That installs `mpxadrv` and the interactive menu as `mpxadrv-player`.
+Upgrade later with `brew reinstall --HEAD mpxadrv` (or re-run the formula URL).
+
+After a versioned GitHub release (`vX.Y.Z`), the formula can gain a stable
+`url`/`sha256` block so `brew install` without `--HEAD` works; until then use
+`--HEAD`.
+
+### GitHub Release binary
+
+Tagged releases (`v*`) publish a macOS archive (`mpxadrv-*-macos-arm64.tar.gz`)
+via GitHub Actions. The binary links against Homebrew `mdxmini` and
+`fluid-synth`, so install those first, then unpack and put `bin/` on your
+`PATH`. Prefer the formula when you want Homebrew to manage the build and
+dependencies.
+
+### From source
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
+cmake --install build   # optional; installs mpxadrv and mpxadrv-player
 ```
 
-The executable is created at `build/mpxadrv`.
+The executable is also available at `build/mpxadrv` without installing.
 
-### Interactive song menu
+## Interactive song menu
 
 To select songs without typing each filename, change to a folder containing
 MDR/MDX files and run the terminal menu:
@@ -58,12 +91,17 @@ cd Reference/MDR
 ../../scripts/mpxadrv-player.command
 ```
 
-The menu lists the current folder, plays the selected number, and returns to
-the list when playback finishes. `r` refreshes the folder and `q` exits. A
-folder can also be passed explicitly:
+The menu clears the screen, pages the song list to fit the terminal height,
+and always keeps the command line visible at the bottom. Use `n` / `p` (or
+`+` / `-`) to change pages, `/text` to filter by filename, `c` to clear the
+filter, `s` to use the built-in software synth, `d` to pick a CoreMIDI
+USB/physical destination, `r` to reload, and `q` to quit. A folder can also
+be passed explicitly:
 
 ```sh
 scripts/mpxadrv-player.command /path/to/music
+# after Homebrew install:
+# mpxadrv-player /path/to/music
 ```
 
 The script automatically uses `build/mpxadrv` and the local ignored

@@ -446,11 +446,13 @@ void SoftwareSynthPlayer::playAt(
 
 void SoftwareSynthPlayer::playPreparedAt(
     const std::function<bool()>& shouldStop,
-    std::chrono::steady_clock::time_point start) {
+    std::chrono::steady_clock::time_point start,
+    const SongPositionClock& songClock, std::chrono::microseconds lead) {
   try {
     playScheduledMidiEvents(
         impl_->events, impl_->loopStartUs, impl_->infinite, start, shouldStop,
-        [&](const std::vector<std::uint8_t>& bytes) { impl_->send(bytes); });
+        [&](const std::vector<std::uint8_t>& bytes) { impl_->send(bytes); },
+        songClock, lead);
   } catch (...) {
     impl_->allNotesOff();
     throw;

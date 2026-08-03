@@ -658,6 +658,7 @@ class AudioPlayer {
  public:
   explicit AudioPlayer(Song& song)
       : song_(song),
+        rate_(song.rate()),
         remainingFrames_(song.infiniteLoops()
                              ? std::numeric_limits<std::uint64_t>::max()
                              : song.totalFrames()),
@@ -707,6 +708,27 @@ class AudioPlayer {
     prepared_ = true;
   }
 
+  // Audible song position in microseconds since AudioQueueStart, or -1 if the
+  // device clock is not running yet. Safe to call from the MIDI thread.
+  std::int64_t playbackMicroseconds() const {
+    if (queue_ == nullptr || !started_.load() || rate_ <= 0) {
+      return -1;
+    }
+    AudioTimeStamp stamp{};
+    Boolean discontinuity = false;
+    const OSStatus status =
+        AudioQueueGetCurrentTime(queue_, nullptr, &stamp, &discontinuity);
+    if (status != noErr ||
+        (stamp.mFlags & kAudioTimeStampSampleTimeValid) == 0) {
+      return -1;
+    }
+    if (stamp.mSampleTime < 0) {
+      return 0;
+    }
+    return static_cast<std::int64_t>((stamp.mSampleTime * 1'000'000.0) /
+                                     static_cast<double>(rate_));
+  }
+
   void playAt(std::chrono::steady_clock::time_point start,
               std::function<bool()> shouldStop) {
     shouldStop_ = std::move(shouldStop);
@@ -728,6 +750,7 @@ class AudioPlayer {
       }
     }
     requireAudio(AudioQueueStart(queue_, requestedStart), "AudioQueueStart");
+    started_.store(true);
 
     while (!finished_.load() && !shouldStop()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -780,9 +803,11 @@ class AudioPlayer {
   }
 
   Song& song_;
+  int rate_ = 0;
   AudioQueueRef queue_ = nullptr;
   std::uint64_t remainingFrames_ = 0;
   std::atomic<bool> finished_{false};
+  std::atomic<bool> started_{false};
   std::function<bool()> shouldStop_;
   int buffersInFlight_ = 0;
   bool reachedEnd_ = false;
@@ -1194,15 +1219,20 @@ int processMdr(const Options& options) {
       std::exception_ptr midiFailure;
       const auto start = std::chrono::steady_clock::now() +
                          std::chrono::milliseconds(150);
+      const mpxadrv::SongPositionClock songClock = [&]() -> std::int64_t {
+        return player.playbackMicroseconds();
+      };
       std::thread midiThread([&] {
         try {
           const auto shouldStop = [&] {
             return gInterrupted != 0 || hybridStop.load();
           };
+          // Share the FM/PCM AudioQueue clock so external/soft MIDI cannot
+          // drift away from OPM over long looping songs such as BCheck.
           if (coreMidi) {
-            coreMidi->playPreparedAt(shouldStop, start - midiLead);
+            coreMidi->playPreparedAt(shouldStop, start, songClock, midiLead);
           } else {
-            softMidi->playPreparedAt(shouldStop, start - midiLead);
+            softMidi->playPreparedAt(shouldStop, start, songClock, midiLead);
           }
         } catch (...) {
           midiFailure = std::current_exception();

@@ -27,7 +27,10 @@ class SoftwareSynthPlayer {
               std::chrono::steady_clock::time_point start,
               bool infinite = false, int syncSampleRate = 0);
   void playPreparedAt(const std::function<bool()>& shouldStop,
-                      std::chrono::steady_clock::time_point start);
+                      std::chrono::steady_clock::time_point start,
+                      const SongPositionClock& songClock = {},
+                      std::chrono::microseconds lead = std::chrono::microseconds(
+                          0));
   std::chrono::microseconds latencyCompensation() const;
 
  private:

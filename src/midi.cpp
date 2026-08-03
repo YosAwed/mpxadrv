@@ -1112,7 +1112,8 @@ void playScheduledMidiEvents(
     std::uint64_t loopStartUs, bool infinite,
     std::chrono::steady_clock::time_point start,
     const std::function<bool()>& shouldStop,
-    const std::function<void(const std::vector<std::uint8_t>&)>& send) {
+    const std::function<void(const std::vector<std::uint8_t>&)>& send,
+    const SongPositionClock& songClock, std::chrono::microseconds lead) {
   if (events.empty()) {
     return;
   }
@@ -1131,9 +1132,44 @@ void playScheduledMidiEvents(
     }
   }
 
+  const std::int64_t leadUs = lead.count();
   auto timeOrigin = start;
+  std::int64_t cycleBase = 0;
+  bool useAudioClock = false;
   std::size_t index = 0;
   bool firstPass = true;
+
+  auto waitForEvent = [&](std::uint64_t eventUs) {
+    const std::int64_t songTarget =
+        static_cast<std::int64_t>(eventUs) - leadUs;
+    while (!(shouldStop && shouldStop())) {
+      if (songClock) {
+        const std::int64_t audioUs = songClock();
+        if (audioUs >= 0) {
+          if (!useAudioClock) {
+            // AudioQueue sample time 0 is song time 0 (both sides share `start`).
+            useAudioClock = true;
+            cycleBase = 0;
+          }
+          const std::int64_t target = cycleBase + songTarget;
+          if (audioUs >= target) {
+            return;
+          }
+          const std::int64_t remainUs = target - audioUs;
+          const auto sleepFor = std::chrono::microseconds(
+              std::clamp<std::int64_t>(remainUs / 2, 200, 2'000));
+          std::this_thread::sleep_for(sleepFor);
+          continue;
+        }
+      }
+      // wall-clock fallback before the audio device clock is available
+      const auto deadline =
+          timeOrigin + std::chrono::microseconds(eventUs) - lead;
+      std::this_thread::sleep_until(deadline);
+      return;
+    }
+  };
+
   while (true) {
     if (shouldStop && shouldStop()) {
       break;
@@ -1142,19 +1178,24 @@ void playScheduledMidiEvents(
       if (!canLoop) {
         break;
       }
-      // Replay from the song's L point without silencing hanging notes.
       index = loopIndex;
       firstPass = false;
-      timeOrigin = std::chrono::steady_clock::now() -
-                   std::chrono::microseconds(loopStartUs);
+      if (useAudioClock && songClock) {
+        const std::int64_t audioUs = songClock();
+        if (audioUs >= 0) {
+          cycleBase = audioUs - static_cast<std::int64_t>(loopStartUs);
+        }
+      } else {
+        timeOrigin = std::chrono::steady_clock::now() -
+                     std::chrono::microseconds(loopStartUs);
+      }
       continue;
     }
     const ScheduledMidiEvent& event = events[index++];
     if (!firstPass && event.microseconds < loopStartUs) {
       continue;
     }
-    std::this_thread::sleep_until(
-        timeOrigin + std::chrono::microseconds(event.microseconds));
+    waitForEvent(event.microseconds);
     if (shouldStop && shouldStop()) {
       break;
     }

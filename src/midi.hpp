@@ -69,12 +69,22 @@ std::uint64_t midiTickMicroseconds(const MidiSequence& sequence,
 
 // Plays scheduled events once, or forever from loopStartUs when infinite is set
 // and loopStartUs is within the sequence. send() delivers each MIDI message.
+//
+// songClock: optional hybrid master clock returning audible song position in
+// microseconds since AudioQueue start, or <0 if not running yet. When provided,
+// MIDI locks to that clock after it becomes available (avoids wall-clock drift
+// against FM/PCM). lead advances MIDI relative to the clock for soft-synth
+// buffer compensation.
+using SongPositionClock = std::function<std::int64_t()>;
+
 void playScheduledMidiEvents(
     const std::vector<ScheduledMidiEvent>& events,
     std::uint64_t loopStartUs, bool infinite,
     std::chrono::steady_clock::time_point start,
     const std::function<bool()>& shouldStop,
-    const std::function<void(const std::vector<std::uint8_t>&)>& send);
+    const std::function<void(const std::vector<std::uint8_t>&)>& send,
+    const SongPositionClock& songClock = {},
+    std::chrono::microseconds lead = std::chrono::microseconds(0));
 
 void writeStandardMidi(const MidiSequence& sequence,
                        const std::filesystem::path& path,
