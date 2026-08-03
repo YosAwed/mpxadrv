@@ -59,7 +59,14 @@ int main() {
             "song loop start tick was not recorded");
 
     const auto& events = sequence.tracks[0].events;
-    require(events.size() == 15, "MIDI event count is wrong");
+    require(events.size() == 17, "MIDI event count is wrong");
+    const auto bendRangeLsb = std::find_if(
+        events.begin(), events.end(), [](const mpxadrv::MidiEvent& event) {
+          return event.bytes ==
+                 std::vector<std::uint8_t>({0xb0, 38, 0});
+        });
+    require(bendRangeLsb != events.end(),
+            "bend-range Data Entry LSB was not cleared");
     const auto program = std::find_if(
         events.begin(), events.end(), [](const mpxadrv::MidiEvent& event) {
           return event.bytes == std::vector<std::uint8_t>({0xc0, 0x05});
@@ -83,6 +90,31 @@ int main() {
     require(events.back().bytes ==
                 std::vector<std::uint8_t>({0xc1, 0x09}),
             "direct MIDI command is wrong");
+
+    const std::vector<std::uint8_t> bankTrack = {
+        0xe0, 0x08, 0x80,  // MIDI channel 1.
+        0xfe, 0x00, 0x08,  // Bank MSB 8 (GS variation).
+        0xfd, 0x50,        // Program 80.
+        0xf1, 0x00,
+    };
+    const mpxadrv::MidiSequence bankSelect = mpxadrv::convertMadrvMidi(
+        bankTrack.data(), bankTrack.size(), offsets, 1, 1);
+    const auto bankMsb = std::find_if(
+        bankSelect.tracks[0].events.begin(), bankSelect.tracks[0].events.end(),
+        [](const mpxadrv::MidiEvent& event) {
+          return event.bytes ==
+                 std::vector<std::uint8_t>({0xb0, 0x00, 0x08});
+        });
+    const auto bankLsb = std::find_if(
+        bankSelect.tracks[0].events.begin(), bankSelect.tracks[0].events.end(),
+        [](const mpxadrv::MidiEvent& event) {
+          return event.bytes ==
+                 std::vector<std::uint8_t>({0xb0, 0x20, 0x00});
+        });
+    require(bankMsb != bankSelect.tracks[0].events.end() &&
+                bankLsb != bankSelect.tracks[0].events.end() &&
+                bankLsb->order == bankMsb->order + 1,
+            "GS bank select did not clear CC32 after CC0");
 
     const std::vector<std::uint8_t> portamentoTrack = {
         0xe0, 0x08, 0x80,  // Switch track to MIDI channel 1.

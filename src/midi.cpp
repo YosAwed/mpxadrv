@@ -86,6 +86,7 @@ struct TrackConverter {
   int velocityLevel = 0;
   int velocityCommand = 0;
   int bendSensitivity = 32768 / 12;
+  std::uint8_t bendRange = 12;
   int bendResponse = 0;
   int bendResponseCounter = 0;
   int bendMode = 0;
@@ -135,15 +136,25 @@ struct TrackConverter {
     channelEvent(0xb0, controller, static_cast<std::uint8_t>(value & 0x7f));
   }
 
+  void emitBendRangeRpn(std::uint8_t range) {
+    // Match MADRV KONOA09: CC100, CC101, then Data Entry. Also clear the
+    // Data Entry LSB so modules that latch both bytes (SC-55) get a clean 24.
+    control(100, 0);
+    control(101, 0);
+    control(6, range);
+    control(38, 0);
+  }
+
   void setBendRange(std::uint8_t range, bool emit) {
-    if (midi && emit) {
-      control(100, 0);
-      control(101, 0);
-      control(6, range);
-    }
-    bendSensitivity = range >= 2 && range <= 24 ? 32768 / range : 0;
+    const std::uint8_t clamped =
+        range >= 2 && range <= 24 ? range : static_cast<std::uint8_t>(12);
+    bendRange = clamped;
+    bendSensitivity = 32768 / clamped;
     bendResponseCounter = 0;
     bendRangePending = midi && !emit;
+    if (midi && emit) {
+      emitBendRangeRpn(clamped);
+    }
   }
 
   void emitPendingBendRange() {
@@ -151,9 +162,7 @@ struct TrackConverter {
       return;
     }
     bendRangePending = false;
-    control(100, 0);
-    control(101, 0);
-    control(6, 12);
+    emitBendRangeRpn(bendRange);
   }
 
   int noteVelocity() const { return (~nowVolume) & 0x7f; }
@@ -466,7 +475,11 @@ struct TrackConverter {
         static constexpr std::array<std::uint8_t, 5> kControllers = {
             0x00, 0x05, 0x41, 0x42, 0x43,
         };
-        control(kControllers[subcommand - 0x2c], parameters[0]);
+        const std::uint8_t controller = kControllers[subcommand - 0x2c];
+        control(controller, parameters[0]);
+        if (controller == 0) {
+          control(32, 0);
+        }
         break;
       }
       case 0x31: {  // SC arbitrary memory write.
@@ -846,7 +859,14 @@ struct TrackConverter {
         case 0xfe:
           position = checkedAdvance(position, 2, bytes.size());
           if (midi) {
-            control(bytes[position - 2], bytes[position - 1]);
+            const std::uint8_t controller = bytes[position - 2];
+            const std::uint8_t value = bytes[position - 1];
+            control(controller, value);
+            // GS tone variations select with CC0 (MSB); always clear LSB so a
+            // stale CC32 cannot pin the part to the wrong variation map.
+            if (controller == 0) {
+              control(32, 0);
+            }
           }
           break;
         case 0xff:

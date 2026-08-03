@@ -154,6 +154,20 @@ void allNotesOff(MIDIPortRef port, MIDIEndpointRef destination) noexcept {
   }
 }
 
+// Roland SC-55 / GS system mode set. BOMB.MDR and many GS songs assume the
+// module is already in GS mode; without this, leftover bank/map state makes
+// bend-range and variation tones sound like a different arrangement.
+void sendGsReset(MIDIPortRef port, MIDIEndpointRef destination) {
+  static constexpr std::uint8_t kGsReset[] = {
+      0xf0, 0x41, 0x10, 0x42, 0x12, 0x40, 0x00, 0x7f, 0x00, 0x41, 0xf7,
+  };
+  sendMessage(port, destination,
+              std::vector<std::uint8_t>(std::begin(kGsReset),
+                                        std::end(kGsReset)));
+  // Roland documents ~40–50 ms before further messages after GS reset.
+  std::this_thread::sleep_for(std::chrono::milliseconds(80));
+}
+
 }  // namespace
 
 class CoreMidiPlayer::Impl {
@@ -206,6 +220,8 @@ void CoreMidiPlayer::prepare(const MidiSequence& sequence, bool infinite,
           ? midiTickMicroseconds(sequence, sequence.loopStartTick,
                                  syncSampleRate)
           : std::numeric_limits<std::uint64_t>::max();
+  // Settle the module before the hybrid FM/PCM clock is armed.
+  sendGsReset(impl_->handles.port, impl_->destination);
 }
 
 void CoreMidiPlayer::playAt(const MidiSequence& sequence,
