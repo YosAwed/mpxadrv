@@ -5,6 +5,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -102,6 +103,13 @@ struct TrackConverter {
   bool midi = false;
   bool emitted = false;
   bool stopped = false;
+  // Cross-track MADRV sync (EF send / EE wait). When syncMode is set, rests and
+  // notes deposit into pendingDuration instead of advancing tick immediately so
+  // a shared scheduler can step every track on one Timer-B clock.
+  bool syncMode = false;
+  bool waitingEe = false;
+  int pendingDuration = 0;
+  std::array<bool, 32>* syncSignals = nullptr;
   std::uint8_t rolandDevice = 0x10;
   std::array<std::uint8_t, 16> scPartialReserve{};
   std::vector<std::pair<int, int>> polyNotes;
@@ -211,6 +219,11 @@ struct TrackConverter {
         pitchAccumulator += static_cast<std::uint32_t>(portamentoStep);
         pitchBend(tick + static_cast<std::uint64_t>(elapsed));
       }
+    }
+    if (syncMode) {
+      pendingDuration = duration;
+      portamentoStep = 0;
+      return;
     }
     tick += static_cast<std::uint64_t>(duration);
     portamentoStep = 0;
@@ -656,13 +669,36 @@ struct TrackConverter {
                     : kVolumeTable[command & 0x0f] * (midi ? 2 : 1);
   }
 
-  void run() {
+  // Process commands until a duration is pending, EE is waiting, or the track
+  // stops. Used by the shared Timer-B scheduler for EF/EE sync.
+  void pumpUntilBlock() {
     constexpr std::uint64_t kMaximumCommands = 10'000'000;
     std::uint64_t commandCount = 0;
     while (!stopped && position < bytes.size()) {
+      if (waitingEe || pendingDuration > 0) {
+        return;
+      }
       if (++commandCount > kMaximumCommands) {
         throw MidiError("MDX track exceeded the command safety limit");
       }
+      processOneCommand();
+    }
+    stopped = true;
+  }
+
+  void run() {
+    syncMode = false;
+    syncSignals = nullptr;
+    waitingEe = false;
+    pendingDuration = 0;
+    while (!stopped && position < bytes.size()) {
+      processOneCommand();
+    }
+    stopped = true;
+    result.endTick = tick;
+  }
+
+  void processOneCommand() {
       const std::size_t commandPosition = position;
       const std::uint8_t command = bytes[position++];
 
@@ -670,12 +706,12 @@ struct TrackConverter {
       if (command < noteMinimum) {
         advanceTime(static_cast<int>(command) + 1);
         suppressNextKeyOff = false;
-        continue;
+        return;
       }
       if (command <= 0xdf) {
         position = checkedAdvance(position, 1, bytes.size());
         note(command - noteMinimum, static_cast<int>(bytes[position - 1]) + 1);
-        continue;
+        return;
       }
 
       switch (command) {
@@ -713,7 +749,20 @@ struct TrackConverter {
           }
           break;
         case 0xe8:
+          break;
         case 0xee:
+          // MADRV CMD_EE: wait for TRACKSIGNAL (set by EF to this track).
+          if (syncMode && syncSignals != nullptr) {
+            const int self = result.sourceTrack;
+            if (self >= 0 && self < 32 &&
+                (*syncSignals)[static_cast<std::size_t>(self)]) {
+              (*syncSignals)[static_cast<std::size_t>(self)] = false;
+              break;
+            }
+            position = commandPosition;
+            waitingEe = true;
+            return;
+          }
           break;
         case 0xea:
         case 0xeb:
@@ -723,9 +772,16 @@ struct TrackConverter {
             position = checkedAdvance(position, 4, bytes.size());
           }
           break;
+        case 0xef:
+          // MADRV CMD_EF: send sync to track N (parameter & 0x1f).
+          position = checkedAdvance(position, 1, bytes.size());
+          if (syncMode && syncSignals != nullptr) {
+            const int target = bytes[position - 1] & 0x1f;
+            (*syncSignals)[static_cast<std::size_t>(target)] = true;
+          }
+          break;
         case 0xe9:
         case 0xed:
-        case 0xef:
         case 0xf0:
           position = checkedAdvance(position, 1, bytes.size());
           break;
@@ -877,8 +933,6 @@ struct TrackConverter {
         default:
           throw MidiError("internal MIDI conversion error");
       }
-    }
-    result.endTick = tick;
   }
 };
 
@@ -947,28 +1001,156 @@ MidiSequence convertMadrvMidiWithLimits(
     int trackCount, const std::vector<int>& loopLimits) {
   MidiSequence sequence;
   sequence.tempos.push_back({0, 0xc8, 0});
+
+  struct TrackState {
+    TrackConverter converter;
+    explicit TrackState(MidiSequence& sequence) : converter(sequence) {}
+  };
+
+  std::vector<std::unique_ptr<TrackState>> states;
+  states.reserve(static_cast<std::size_t>(trackCount));
+  std::array<bool, 32> syncSignals{};
+  bool anyTrack = false;
+
   for (int track = 0; track < trackCount; ++track) {
     if (trackOffsets[track] < 0 ||
         static_cast<std::size_t>(trackOffsets[track]) >= length) {
       continue;
     }
-    TrackConverter converter(sequence);
+    auto state = std::make_unique<TrackState>(sequence);
+    TrackConverter& converter = state->converter;
     converter.result.sourceTrack = track;
     converter.bytes.assign(data, data + length);
     converter.position = static_cast<std::size_t>(trackOffsets[track]);
     converter.loopLimit =
-        track < static_cast<int>(loopLimits.size()) ? loopLimits[static_cast<std::size_t>(track)]
-                                                    : 1;
+        track < static_cast<int>(loopLimits.size())
+            ? loopLimits[static_cast<std::size_t>(track)]
+            : 1;
     if (converter.loopLimit < 1) {
       converter.loopLimit = 1;
     }
     converter.midi = track >= 16;
     converter.channel = track & 0x0f;
+    converter.syncMode = true;
+    converter.syncSignals = &syncSignals;
     if (converter.midi) {
       converter.setBendRange(12, false);
     }
-    converter.run();
-    sequence.endTick = std::max(sequence.endTick, converter.result.endTick);
+    states.push_back(std::move(state));
+    anyTrack = true;
+  }
+
+  if (!anyTrack) {
+    return sequence;
+  }
+
+  // Shared Timer-B clock: all tracks advance together so EF (sync send) can
+  // release EE (sync wait) on the same tick order MADRV used (track 0..N).
+  constexpr std::uint64_t kMaximumTicks = 10'000'000;
+  for (std::uint64_t globalTick = 0; globalTick < kMaximumTicks; ++globalTick) {
+    bool anyActive = false;
+    for (auto& state : states) {
+      if (!state->converter.stopped) {
+        anyActive = true;
+        break;
+      }
+    }
+    if (!anyActive) {
+      break;
+    }
+
+    bool progress = true;
+    int round = 0;
+    while (progress && ++round < 64) {
+      progress = false;
+      for (auto& state : states) {
+        TrackConverter& converter = state->converter;
+        if (converter.stopped) {
+          continue;
+        }
+        converter.tick = globalTick;
+        if (converter.pendingDuration > 0) {
+          continue;
+        }
+        if (converter.waitingEe) {
+          const int self = converter.result.sourceTrack;
+          if (self >= 0 && self < 32 &&
+              syncSignals[static_cast<std::size_t>(self)]) {
+            syncSignals[static_cast<std::size_t>(self)] = false;
+            converter.waitingEe = false;
+            ++converter.position;
+            progress = true;
+          } else {
+            continue;
+          }
+        }
+        const std::size_t before = converter.position;
+        const bool wasWaiting = converter.waitingEe;
+        const int beforePending = converter.pendingDuration;
+        converter.pumpUntilBlock();
+        if (converter.stopped || converter.waitingEe != wasWaiting ||
+            converter.pendingDuration != beforePending ||
+            converter.position != before) {
+          progress = true;
+        }
+      }
+    }
+
+    bool anyCountdown = false;
+    bool anyWaiting = false;
+    bool anyRunnable = false;
+    for (auto& state : states) {
+      TrackConverter& converter = state->converter;
+      if (converter.stopped) {
+        continue;
+      }
+      if (converter.pendingDuration > 0) {
+        anyCountdown = true;
+      } else if (converter.waitingEe) {
+        anyWaiting = true;
+      } else {
+        anyRunnable = true;
+      }
+    }
+
+    if (!anyCountdown && !anyRunnable && anyWaiting) {
+      // Deadlock: every live track is parked on EE with no sender left.
+      for (auto& state : states) {
+        TrackConverter& converter = state->converter;
+        if (converter.stopped || !converter.waitingEe) {
+          continue;
+        }
+        converter.warning(
+            "track sync wait (EE) never received EF; waiting abandoned");
+        converter.waitingEe = false;
+        ++converter.position;
+        break;
+      }
+      continue;
+    }
+
+    if (!anyCountdown && !anyWaiting && !anyRunnable) {
+      break;
+    }
+
+    // End of this Timer-B period: consume one tick of each sounding duration.
+    for (auto& state : states) {
+      TrackConverter& converter = state->converter;
+      if (converter.pendingDuration > 0) {
+        --converter.pendingDuration;
+      }
+    }
+  }
+
+  for (auto& state : states) {
+    TrackConverter& converter = state->converter;
+    if (!converter.stopped && converter.waitingEe) {
+      converter.warning(
+          "track still waiting on EE when conversion ended");
+    }
+    converter.result.endTick = converter.tick;
+    sequence.endTick =
+        std::max(sequence.endTick, converter.result.endTick);
     if (converter.emitted) {
       sequence.tracks.push_back(std::move(converter.result));
     }
@@ -1401,14 +1583,20 @@ void playScheduledMidiEvents(
     const std::function<bool()>& shouldStop,
     const std::function<void(const std::vector<std::uint8_t>&)>& send,
     const SongPositionClock& songClock, std::chrono::microseconds lead,
-    const std::vector<std::vector<std::uint8_t>>& loopRestore) {
+    const std::vector<std::vector<std::uint8_t>>& loopRestore,
+    std::uint64_t loopEndUs) {
   if (events.empty()) {
     return;
   }
 
+  const std::uint64_t cycleEndUs =
+      loopEndUs != std::numeric_limits<std::uint64_t>::max() &&
+              loopEndUs > loopStartUs
+          ? loopEndUs
+          : events.back().microseconds;
   const bool canLoop =
       infinite && loopStartUs != std::numeric_limits<std::uint64_t>::max() &&
-      events.back().microseconds > loopStartUs;
+      cycleEndUs > loopStartUs;
   std::size_t loopIndex = 0;
   if (canLoop) {
     while (loopIndex < events.size() &&
@@ -1484,6 +1672,33 @@ void playScheduledMidiEvents(
     }
   };
 
+  // Songs like MEGALITH dump 100+ CC/RPN messages on the first tick before any
+  // note-on. Sending that burst in the same instant as the downbeat makes many
+  // external modules drop the first notes (and hybrid OPM alone then sounds
+  // like the opening was cut). Deliver pre-note setup slightly before start.
+  std::size_t firstNoteOn = events.size();
+  for (std::size_t i = 0; i < events.size(); ++i) {
+    const auto& bytes = events[i].bytes;
+    if (bytes.size() >= 3 && (bytes[0] & 0xf0) == 0x90 && bytes[2] != 0) {
+      firstNoteOn = i;
+      break;
+    }
+  }
+  if (firstNoteOn > 0 && !(shouldStop && shouldStop())) {
+    const auto setupDeadline =
+        start - std::chrono::milliseconds(40) - lead;
+    if (setupDeadline > std::chrono::steady_clock::now()) {
+      std::this_thread::sleep_until(setupDeadline);
+    }
+    for (; index < firstNoteOn; ++index) {
+      if (shouldStop && shouldStop()) {
+        return;
+      }
+      send(events[index].bytes);
+      observeMessage(events[index].bytes);
+    }
+  }
+
   auto resetForLoop = [&] {
     // Light wrap: only release notes that are still marked on. Leave the drum
     // channel alone so open crash/ride at the loop point is not choked.
@@ -1512,7 +1727,13 @@ void playScheduledMidiEvents(
       if (!canLoop) {
         break;
       }
-      const std::uint64_t cycleEndUs = events.back().microseconds;
+      // Gate < 8 ends the last Note Off before F1. Wait out that trailing
+      // silence so each wrap matches the OPM/MML cycle (endTick), not the
+      // last MIDI message.
+      waitForEvent(cycleEndUs);
+      if (shouldStop && shouldStop()) {
+        break;
+      }
       // Re-anchor using the audio clock from *before* the wrap flush so reset
       // latency cannot accumulate into later cycles. Fall back to the musical
       // period when the audio clock is unavailable.

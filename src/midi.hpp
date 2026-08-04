@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -91,7 +92,10 @@ void playScheduledMidiEvents(
     const std::function<void(const std::vector<std::uint8_t>&)>& send,
     const SongPositionClock& songClock = {},
     std::chrono::microseconds lead = std::chrono::microseconds(0),
-    const std::vector<std::vector<std::uint8_t>>& loopRestore = {});
+    const std::vector<std::vector<std::uint8_t>>& loopRestore = {},
+    // Musical cycle end (sequence.endTick). Must not be derived from the last
+    // Note Off: gate < 8 leaves silence before F1 and shortens each wrap vs OPM.
+    std::uint64_t loopEndUs = std::numeric_limits<std::uint64_t>::max());
 
 void writeStandardMidi(const MidiSequence& sequence,
                        const std::filesystem::path& path,

@@ -197,6 +197,7 @@ class CoreMidiPlayer::Impl {
   std::vector<ScheduledMidiEvent> events;
   std::vector<std::vector<std::uint8_t>> loopRestore;
   std::uint64_t loopStartUs = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t loopEndUs = std::numeric_limits<std::uint64_t>::max();
   bool infinite = false;
 };
 
@@ -206,7 +207,9 @@ CoreMidiPlayer::CoreMidiPlayer(const std::string& destinationSelector)
 CoreMidiPlayer::~CoreMidiPlayer() = default;
 
 std::chrono::microseconds CoreMidiPlayer::latencyCompensation() const {
-  return std::chrono::microseconds(0);
+  // External MIDI (USB) + tone-generator receive lag. A short lead lines the
+  // first downbeat up with OPM AudioQueue without pushing later notes early.
+  return std::chrono::microseconds(10'000);
 }
 
 void CoreMidiPlayer::prepare(const MidiSequence& sequence, bool infinite,
@@ -220,6 +223,10 @@ void CoreMidiPlayer::prepare(const MidiSequence& sequence, bool infinite,
       impl_->infinite
           ? midiTickMicroseconds(sequence, sequence.loopStartTick,
                                  syncSampleRate)
+          : std::numeric_limits<std::uint64_t>::max();
+  impl_->loopEndUs =
+      impl_->infinite
+          ? midiTickMicroseconds(sequence, sequence.endTick, syncSampleRate)
           : std::numeric_limits<std::uint64_t>::max();
   impl_->loopRestore =
       impl_->infinite ? midiLoopRestoreMessages(sequence)
@@ -244,7 +251,7 @@ void CoreMidiPlayer::playPreparedAt(
     playScheduledMidiEvents(
         impl_->events, impl_->loopStartUs, impl_->infinite, start, shouldStop,
         [&](const std::vector<std::uint8_t>& bytes) { impl_->send(bytes); },
-        songClock, lead, impl_->loopRestore);
+        songClock, lead, impl_->loopRestore, impl_->loopEndUs);
   } catch (...) {
     impl_->silence();
     throw;

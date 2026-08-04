@@ -1,0 +1,412 @@
+{
+  "version": 1,
+  "songs": [
+    {
+      "id": "BCheck",
+      "title": "Balance Check SC55←→X68000 OPM / GRADIUS (C)KONAMI",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/BCheck.MDR"
+    },
+    {
+      "id": "BELL20_SC",
+      "title": "Twinbee Rainbow Bell Adventure (C)KONAMI - Aurora World - by Kou / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/BELL20_SC.MDR"
+    },
+    {
+      "id": "BF1_SC",
+      "title": "Burning Force (C)NAMCO - Bay Area - / by J.Ueda / AVG-FOE",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/BF1_SC.MDR"
+    },
+    {
+      "id": "BOMB",
+      "title": "BOMBER MAN -GS- #10 By MIMCOT. FUJI. KONOA.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/BOMB.MDR"
+    },
+    {
+      "id": "Bos04_SC",
+      "title": "Bosconian X68000 (C)NAMCO,dp - Little Wave - / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/Bos04_SC.MDR"
+    },
+    {
+      "id": "Bos04_SC_2",
+      "title": "Bosconian X68000 (C)NAMCO,dp - Little Wave - / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/Bos04_SC_.MDR"
+    },
+    {
+      "id": "BOS06_SC",
+      "title": "Bosconian X68000 (c)NAMCO,dp - Get 'Lady' - / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/BOS06_SC.MDR"
+    },
+    {
+      "id": "CAM_SC",
+      "title": "Super Street Fighter 2 (C)CAPCOM - VS Cammy - / Layer Mix - By.Kurinpa. Super Street Fighter 2 �� Anniversary Grand Master Edition :-p / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/CAM_SC.MDR"
+    },
+    {
+      "id": "CCBS_D_SC",
+      "title": "CanCan Bunny Superior (C)Cocktail soft - UMIN.D - / By RAY-LOAD.A / Cv.for MDX by Mamma. Modified for SC-55 by AVG-FOE.（しつけぇって(^^;)）",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/CCBS_D_SC.MDR"
+    },
+    {
+      "id": "CHALB_SC",
+      "title": "Challenger (C)HUDSON - Scene 2 - / 〓WAIENDEE〓 / HALLY'91 / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/CHALB_SC.MDR"
+    },
+    {
+      "id": "CLI19_SC",
+      "title": "麻雀ｸﾘﾆｯｸ増刊号 (C)HOME DATA - NUDE 3 BGM - / cv.YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/CLI19_SC.MDR"
+    },
+    {
+      "id": "DS01_SC",
+      "title": "Dragon Spirit (C)NAMCO - Sea - / by Yatsube / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/DS01_SC.MDR"
+    },
+    {
+      "id": "DS21_SC",
+      "title": "Dragon Spirit (C)NAMCO - Top Ranking Name Entry - Cv.Yatsube / FOE.A.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/DS21_SC.MDR"
+    },
+    {
+      "id": "DSB19_SC",
+      "title": "Dragon Saber (C)NAMCO - Chaos - / by Yatsube/DraSab By J.Ueda / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/DSB19_SC.MDR"
+    },
+    {
+      "id": "DTAR5_SC",
+      "title": "Double target (C)SEGA - Round 5 ｰ / Ar.By Veyrlen / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/DTAR5_SC.MDR"
+    },
+    {
+      "id": "DTB_ENDSC",
+      "title": "出たなTwinbee (C)KONAMI - 惑星メルに平和の戻る日 - / by RUPA. / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/DTB_ENDSC.MDR"
+    },
+    {
+      "id": "EFG_SC2",
+      "title": "G-LOC R360 version (C)SEGA - Earth Frame G - / By.雅(弐) / SC55 Ver. AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/EFG_SC2.MDR"
+    },
+    {
+      "id": "EGPMED_SC",
+      "title": "Gamma planet - Ending - / by mimcot,Fuji. / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/EGPMED_SC.MDR"
+    },
+    {
+      "id": "FZ11_SC",
+      "title": "Fantasy Zone (C)SEGA - おぱおぱっ(C)ZILLION(^^;) - / Cv.Yatsube / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/FZ11_SC.MDR"
+    },
+    {
+      "id": "FZ18_SC",
+      "title": "Fantasy Zone (C)SEGA - 明日を夢見て - / Cv.Yatsube / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/FZ18_SC.MDR"
+    },
+    {
+      "id": "FZ1F_SC",
+      "title": "Fantasy Zone (C)SEGA/dp - Space Harrier - / Cv.Yatsube / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/FZ1F_SC.MDR"
+    },
+    {
+      "id": "G1_3_3SC",
+      "title": "Genocide 1 (C)ZOOM - Stage 3-3 - / by DIS / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/G1_3_3SC.MDR"
+    },
+    {
+      "id": "G2_ST02_SC",
+      "title": "餓狼伝説２(C)SNK - VS Andy Bogard - / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/G2_ST02_SC.MDR"
+    },
+    {
+      "id": "G2M_TTL_SC",
+      "title": "Gradius 2 MSX (C)KONAMI - Title Back - / By 斎藤 彰良 / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/G2M_TTL_SC.MDR"
+    },
+    {
+      "id": "GN2_18GS",
+      "title": "Genocide 2 - Stage 5 boss - / (c)ZOOM / cvtd. by DIS / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/GN2_18GS.MDR"
+    },
+    {
+      "id": "GN2_18SC",
+      "title": "Genocide 2 (C)ZOOM - Stage 5 boss - / cvtd. by DIS / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/GN2_18SC.MDR"
+    },
+    {
+      "id": "HA",
+      "title": "遥か彼方に.... from CarrotDM11/composed by DX-π/cv.Missy.M/ex-mdr by このえ",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/HA.MDR"
+    },
+    {
+      "id": "HC_01_SC",
+      "title": "HOT CHASE(C)KONAMI - It's a hard way in the suburbs - / by PEITA / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/HC_01_SC.MDR"
+    },
+    {
+      "id": "HECT_GS2",
+      "title": "Super Star Soldier - ｢ Hector'87 ｣ - / for OPM+SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/HECT_GS2.MDR"
+    },
+    {
+      "id": "IF02_SC",
+      "title": "IF (イフ) (c) Activesoftware / Menu......... / By PIYONA. / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/IF02_SC.MDR"
+    },
+    {
+      "id": "KN01_SC",
+      "title": "Knight Arms (C)Arsys - Frenzied Dance of Light - / Cv.Yatsube / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/KN01_SC.MDR"
+    },
+    {
+      "id": "KNA01_GS",
+      "title": "Knight Arms - Frenzied Dance of Light - / by Yatsube / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/KNA01_GS.MDR"
+    },
+    {
+      "id": "MEGALITH",
+      "title": "T-SQUARE 'NEW-S' No.1 ｢MEGALITH｣ By AFH-APPLE68K. For SC55 By Konoa.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MEGALITH.MDR",
+      "pdx": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MEGALITH.PDX"
+    },
+    {
+      "id": "MHN1_SC3",
+      "title": "Metal Hawk (C)NAMCO - NAME A - / By Veyrlen / SC55 Cv. AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MHN1_SC3.MDR"
+    },
+    {
+      "id": "MHN2_SC",
+      "title": "METAL HAWK (C)NAMCO - NAME [B] - / By Veyrlen / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MHN2_SC.MDR"
+    },
+    {
+      "id": "MJ_RUMI_SC",
+      "title": "あにま～じゃんV3(C)SOGNA - Message From RUMI - Feat.くりんぱ / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MJ_RUMI_SC.MDR",
+      "pdx": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MJ_RUMI_SC.pdx"
+    },
+    {
+      "id": "MO00_SC",
+      "title": "Metal Orange X68000 (C)Cybertech CUSTOM - Pause - / cv. ATARU君 / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MO00_SC.MDR"
+    },
+    {
+      "id": "MO01_SC",
+      "title": "Metal Orange EX (C)Custom - Title Back - / cv. ATARU君 / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MO01_SC.MDR"
+    },
+    {
+      "id": "MO21_SC",
+      "title": "Metal Orange X68000 (C)Cybertech CUSTOM - Ending - / cv. ATARU君 / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MO21_SC.MDR"
+    },
+    {
+      "id": "MO21_SC_2",
+      "title": "Metal Orange EX (C)Custom - Ending - / cv. ATARU君 / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MO21_SC_.MDR"
+    },
+    {
+      "id": "MO21_SC_3",
+      "title": "Metal Orange EX (C)Custom - Ending - / cv. ATARU君 / FOE.A '95 Ver.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MO21~SC.MDR"
+    },
+    {
+      "id": "MVPC2_SC",
+      "title": "MVP (C)SEGA - Sound No.C2 - by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/MVPC2_SC.MDR"
+    },
+    {
+      "id": "N206_SC",
+      "title": "脳天直撃２ (C)IRONGEAR - Music No.06 - / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/N206_SC.MDR"
+    },
+    {
+      "id": "NAMA47GS",
+      "title": "生中継６８(c)KONAMI - Music No.47 勝負はこれからよっversion - / Converted by RUPA. / Modified for OPM+PCM+SC-55 by AVG-ALTHEA-FOE. / あ～、時間が欲しい・・・・何もできない・・・・・ / くそ～、プータローになった暁には曲データ沢山作るぞぉ(笑) / （もう辞める話をするやつ(^^;)）",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA47GS.MDR",
+      "pdx": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA.PDX"
+    },
+    {
+      "id": "NAMA47SC",
+      "title": "生中継68(C)KONAMI - Music No.47 - Proto Ver.Unknown(^^;) / by RUPA. / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA47SC.MDR",
+      "pdx": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA.PDX"
+    },
+    {
+      "id": "NAMA49_SC",
+      "title": "生中継68(c)KONAMI - Music No.49 - / Cv. RUPA. / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA49_SC.MDR"
+    },
+    {
+      "id": "NAMA49SC",
+      "title": "生中継68(c)KONAMI - Music No.49 - / Cv. RUPA. / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA49SC.MDR",
+      "pdx": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA.PDX"
+    },
+    {
+      "id": "NAMA4F_SC",
+      "title": "生中継68 (C)KONAMI - Music No.4F - / by RUPA. / AVG-FOE. Rel.4",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA4F_SC.MDR"
+    },
+    {
+      "id": "NAMA4FGS",
+      "title": "生中継６８(c)KONAMI - Music No.4F - / by RUPA. / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA4FGS.MDR",
+      "pdx": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/NAMA.PDX"
+    },
+    {
+      "id": "OT31_SC",
+      "title": "OverTake (C)Zoom - Ending 02 - cv. DIS / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/OT31_SC.MDR"
+    },
+    {
+      "id": "PH06_SC",
+      "title": "Phalanx (c)ZOOM - Stage 6 - by DIS / FOE.A",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/PH06_SC.MDR"
+    },
+    {
+      "id": "PLRL01_SC",
+      "title": "Pu･Li･Ru･La (C)TAITO - ザック＆メルの街 - / by hyperjarikun / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/PLRL01_SC.MDR"
+    },
+    {
+      "id": "PLUSA_4GS",
+      "title": "PLUS ALPHA - Sun Colors - / (c)Jaleco / for SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/PLUSA_4GS.MDR"
+    },
+    {
+      "id": "PRIN_GS",
+      "title": "THE TOWER OF DRUAGA - PRINCESS - / For SC-55+YM-2151 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/PRIN_GS.MDR"
+    },
+    {
+      "id": "QRTA1_SC",
+      "title": "Quartet (C)SEGA - New Wave '93 - / by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/QRTA1_SC.MDR"
+    },
+    {
+      "id": "QRTA2_SC",
+      "title": "Quartet (C)SEGA - Round Clear - / by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/QRTA2_SC.MDR"
+    },
+    {
+      "id": "QRTAC_SC",
+      "title": "Quartet (C)SEGA - Rap - / by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/QRTAC_SC.MDR",
+      "pdx": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/QRTAC_SC.PDX"
+    },
+    {
+      "id": "SF91_SC",
+      "title": "Strike Fighter (c)SEGA - Funky Bomb - by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SF91_SC.MDR"
+    },
+    {
+      "id": "SF93_SC",
+      "title": "Strike Fighter (c)SEGA - Shuffle Cannon - by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SF93_SC.MDR"
+    },
+    {
+      "id": "SF94_SC",
+      "title": "Strike Fighter (c)SEGA - K-City - by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SF94_SC.MDR"
+    },
+    {
+      "id": "SF95_SC",
+      "title": "Strike Fighter (c)SEGA - Hyper Hopper - by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SF95_SC.MDR"
+    },
+    {
+      "id": "SF98_SC",
+      "title": "Strike Fighter (c)SEGA - No more time - by YURAYSAN / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SF98_SC.MDR"
+    },
+    {
+      "id": "SIGN07_SC",
+      "title": "Signatory(C)NCS - Battle - / cv.ひんべぇ / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SIGN07_SC.MDR"
+    },
+    {
+      "id": "SLM6_1GS",
+      "title": "SLIMYER - No.6 - / HOT-B(T.KAWANO) / cv by K.MAEKAWA / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SLM6_1GS.MDR"
+    },
+    {
+      "id": "SLM6_GS",
+      "title": "SLIMYER - No.6 - / HOT-B(T.KAWANO) / cv by K.MAEKAWA / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SLM6_GS.MDR"
+    },
+    {
+      "id": "SONIC1_SC",
+      "title": "Sonic the hedgehog (C)SEGA - Green hill zone - / By Veyrlen / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SONIC1_SC.MDR"
+    },
+    {
+      "id": "SOUL_2GS",
+      "title": "Magical Shot - Soul - / by Hideya Nagata cv.YURAYSAN / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SOUL_2GS.MDR"
+    },
+    {
+      "id": "SOUL_55",
+      "title": "Magical Shot - Soul - / by Hideya Nagata cv.YURAYSAN / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SOUL_55.MDR"
+    },
+    {
+      "id": "SOUL_GS",
+      "title": "Magical Shot - Soul - / by Hideya Nagata cv.YURAYSAN / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SOUL_GS.MDR"
+    },
+    {
+      "id": "SPD11_2SC",
+      "title": "Spindizzy II (c)Arsys - Arrow Maze - by RUPA. / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SPD11_2SC.MDR"
+    },
+    {
+      "id": "SPLASH_GS",
+      "title": "OUTRUN - SPLASH WAVE - / (c)S.S.T. BAND / For SC-55+YM-2151 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/SPLASH_GS.MDR"
+    },
+    {
+      "id": "STD06_SC",
+      "title": "Strip Fighter 2’(C)南国猫桜 - Music 06 - CVT:KuriDG,+SC55:FOE.ReMix.Retakes.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/STD06_SC.MDR"
+    },
+    {
+      "id": "TC6_SC",
+      "title": "Thunder Cross (C)KONAMI - Stage 6 - / By Junchan / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/TC6_SC.MDR"
+    },
+    {
+      "id": "TRI12U_SC",
+      "title": "TRIGON (c)KONAMI - Nostalgic - / cv. うさぎぃ / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/TRI12U_SC.MDR"
+    },
+    {
+      "id": "WallVal_GS",
+      "title": "MOTOS X68000 - Wall of Valkyurie - / Cv by Yatsube / For SC-55 by AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/WallVal_GS.MDR"
+    },
+    {
+      "id": "WFANG4_1SC",
+      "title": "Wolf Fang (C)DECO - Midnight Chaser - / By Veyrlen / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/WFANG4_1SC.MDR"
+    },
+    {
+      "id": "wfang4_sc2",
+      "title": "Wolf Fang (C)DECO - Midnight Chaser - / By Veyrlen / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/wfang4_sc2.mdr"
+    },
+    {
+      "id": "wfang4_sc4",
+      "title": "Wolf Fang (C)DECO - Midnight Chaser - / By Veyrlen / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/wfang4_sc4.mdr"
+    },
+    {
+      "id": "YED_CRT_SC",
+      "title": "CARAT X68k (C)CUSTOM - 妖艶天使 Ending - / AVG-FOE. 自棄糞mode sets.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/YED_CRT_SC.MDR"
+    },
+    {
+      "id": "A_SC",
+      "title": "きんぎょ注意報！ - わぴこ元気予報 - / by PEROJUE / AVG-FOE.",
+      "mdr": "https://pub-b8fe9a6607f34680947a53218f6e0399.r2.dev/mdr/金魚A_SC.MDR"
+    }
+  ]
+}

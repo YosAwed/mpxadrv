@@ -405,6 +405,7 @@ class SoftwareSynthPlayer::Impl {
   std::vector<ScheduledMidiEvent> events;
   std::vector<std::vector<std::uint8_t>> loopRestore;
   std::uint64_t loopStartUs = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t loopEndUs = std::numeric_limits<std::uint64_t>::max();
   bool infinite = false;
 };
 
@@ -435,6 +436,10 @@ void SoftwareSynthPlayer::prepare(const MidiSequence& sequence, bool infinite,
           ? midiTickMicroseconds(sequence, sequence.loopStartTick,
                                  syncSampleRate)
           : std::numeric_limits<std::uint64_t>::max();
+  impl_->loopEndUs =
+      impl_->infinite
+          ? midiTickMicroseconds(sequence, sequence.endTick, syncSampleRate)
+          : std::numeric_limits<std::uint64_t>::max();
   impl_->loopRestore =
       impl_->infinite ? midiLoopRestoreMessages(sequence)
                       : std::vector<std::vector<std::uint8_t>>{};
@@ -456,7 +461,7 @@ void SoftwareSynthPlayer::playPreparedAt(
     playScheduledMidiEvents(
         impl_->events, impl_->loopStartUs, impl_->infinite, start, shouldStop,
         [&](const std::vector<std::uint8_t>& bytes) { impl_->send(bytes); },
-        songClock, lead, impl_->loopRestore);
+        songClock, lead, impl_->loopRestore, impl_->loopEndUs);
   } catch (...) {
     impl_->allNotesOff();
     throw;

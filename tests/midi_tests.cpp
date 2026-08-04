@@ -341,6 +341,33 @@ int main() {
     require(mpxadrv::resolveRhythmProgram(3) == 0,
             "unknown drum program should fall back to Standard");
 
+    // EF/EE track sync: waiter must not sound until the sender's EF arrives.
+    const std::vector<std::uint8_t> syncData = {
+        // Track 0: rest 48, EF -> track 1, end.
+        0xe0, 0x08, 0x80, 0x2f, 0xef, 0x01, 0xf1, 0x00,
+        // Track 1: EE wait, then one drum-ish note, end.
+        0xe0, 0x08, 0x81, 0xfb, 0x80, 0xee, 0xa0, 0x03, 0xf1, 0x00,
+    };
+    const int syncOffsets[] = {0, 8};
+    const mpxadrv::MidiSequence synced = mpxadrv::convertMadrvMidi(
+        syncData.data(), syncData.size(), syncOffsets, 2, 1);
+    require(synced.tracks.size() == 2, "sync fixtures should emit both tracks");
+    bool foundLateNote = false;
+    for (const auto& track : synced.tracks) {
+      if (track.sourceTrack != 1) {
+        continue;
+      }
+      for (const auto& event : track.events) {
+        if (event.bytes.size() >= 3 && (event.bytes[0] & 0xf0) == 0x90 &&
+            event.bytes[2] != 0) {
+          require(event.tick == 48,
+                  "EE-waited note must start exactly when EF is sent");
+          foundLateNote = true;
+        }
+      }
+    }
+    require(foundLateNote, "EE-waited note was not emitted");
+
     std::cout << "MIDI conversion tests passed\n";
     return 0;
   } catch (const std::exception& error) {
