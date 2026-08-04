@@ -250,6 +250,48 @@ Useful options:
 
 Run `./build/mpxadrv --help` for the complete command reference.
 
+## Streaming songs over the network
+
+Song data usually cannot be committed to a public repository for copyright
+reasons, and you may not want local copies at all. Any command that accepts
+a file path also accepts an `http(s)` URL; the song is downloaded into
+memory and played without being saved locally:
+
+```sh
+./build/mpxadrv play https://example.com/private/song.mdr
+./build/mpxadrv info https://example.com/private/song.mdr
+```
+
+This works with `info`, `play`, `render`, `midi`, `midi-synth`, and
+`midi-play`, for MDR and MDX alike:
+
+- MDR files are parsed straight from memory. MDX files (and the temporary
+  MDX that hybrid MDR playback builds internally) need a seekable file for
+  mdxmini, so those bytes are staged in a private temporary directory that
+  is deleted when the command exits. Nothing is written to your music
+  folder.
+- A PDX bank named by the song is downloaded from the same URL directory
+  when needed; `-p/--pdx-dir` still prefers a local copy. TDX compilation
+  requires local files.
+- Downloads go through the system `curl`, so `~/.netrc`, proxy settings,
+  and other curl configuration apply, and presigned query strings are fine.
+- `render` and `midi` still write their explicit `-o` output file; only the
+  song input is streaming-only.
+
+Private hosting ideas for personal use:
+
+- a private GitHub repository, using a `raw.githubusercontent.com` URL plus
+  a token in `~/.netrc`
+  (`machine raw.githubusercontent.com login <you> password <token>`)
+- any static file server behind basic auth, e.g.
+  `https://user:password@host/songs/song.mdr`
+- S3-compatible object storage with a presigned URL
+- a file server reachable only through your VPN or Tailscale network
+
+Keep the host private and prefer simple ASCII file names. Making
+copyrighted song data publicly downloadable is the same problem as
+committing it, just on a different server.
+
 ## TDX syntax
 
 The native loader follows `MAC_PLAY.S`:
