@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "songs": [
+    {
+      "id": "demo",
+      "title": "Demo Song",
+      "mdr": "https://private.example.invalid/demo.mdr",
+      "pdx": "https://private.example.invalid/demo.pdx"
+    }
+  ]
+}

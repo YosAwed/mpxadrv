@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(mpxadrv VERSION 0.6.1 LANGUAGES CXX)
+project(mpxadrv VERSION 0.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -48,11 +48,16 @@ find_library(AUDIOTOOLBOX_FRAMEWORK AudioToolbox REQUIRED)
 find_library(COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
 find_library(COREMIDI_FRAMEWORK CoreMIDI REQUIRED)
+find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(ICONV_LIBRARY iconv REQUIRED)
 
+enable_language(OBJCXX)
+
 add_executable(mpxadrv
+  src/catalog.cpp
   src/compat.cpp
   src/core_midi.cpp
+  src/http.mm
   src/main.cpp
   src/mdr.cpp
   src/midi.cpp
@@ -71,6 +76,7 @@ target_link_libraries(mpxadrv PRIVATE
   "${COREAUDIO_FRAMEWORK}"
   "${COREFOUNDATION_FRAMEWORK}"
   "${COREMIDI_FRAMEWORK}"
+  "${FOUNDATION_FRAMEWORK}"
   "${ICONV_LIBRARY}"
 )
 
@@ -83,6 +89,9 @@ target_compile_options(mpxadrv PRIVATE
 include(CTest)
 if(BUILD_TESTING)
   add_test(NAME help COMMAND mpxadrv --help)
+  set_tests_properties(help PROPERTIES
+    PASS_REGULAR_EXPRESSION "catalog"
+  )
   add_test(NAME version COMMAND mpxadrv --version)
   set_tests_properties(version PROPERTIES
     PASS_REGULAR_EXPRESSION "macOS CLI adaptation developed by Awed"
@@ -104,6 +113,16 @@ if(BUILD_TESTING)
   target_include_directories(compat_tests PRIVATE src)
   target_compile_options(compat_tests PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME compatibility_scanner COMMAND compat_tests)
+
+  add_executable(catalog_tests
+    tests/catalog_tests.cpp
+    src/catalog.cpp
+    src/http.mm
+  )
+  target_include_directories(catalog_tests PRIVATE src)
+  target_link_libraries(catalog_tests PRIVATE "${FOUNDATION_FRAMEWORK}")
+  target_compile_options(catalog_tests PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME catalog_loader COMMAND catalog_tests)
 
   add_executable(mdr_tests
     tests/mdr_tests.cpp

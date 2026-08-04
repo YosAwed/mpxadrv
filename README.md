@@ -102,6 +102,60 @@ with `MPXADRV_BIN` or `MPXADRV_SOUNDFONT`. To send MIDI to a USB / physical
 module instead of the software synth, set `MPXADRV_DESTINATION` to a
 `midi-list` index or destination name (this disables the SoundFont path).
 
+### Remote catalog and URL playback
+
+Copyrighted MDR/PDX files do not need to live in this repository. Host them on
+private storage and publish a small JSON catalog with song titles and signed
+URLs instead. An example lives at `examples/catalog.example.json`:
+
+```json
+{
+  "version": 1,
+  "songs": [
+    {
+      "id": "demo",
+      "title": "Demo Song",
+      "mdr": "https://private.example/signed/demo.mdr",
+      "pdx": "https://private.example/signed/demo.pdx"
+    }
+  ]
+}
+```
+
+List the catalog from a local file or HTTPS URL:
+
+```sh
+./build/mpxadrv catalog examples/catalog.example.json
+./build/mpxadrv catalog https://example.com/catalog.json --tsv
+```
+
+Play a remote MDR without keeping a local copy. PCM banks can be fetched with
+`--pdx-url` when they are hosted separately:
+
+```sh
+./build/mpxadrv play https://private.example/signed/demo.mdr \
+  --pdx-url https://private.example/signed/demo.pdx \
+  --soundfont SoundFonts/Roland_SC-55.sf2
+```
+
+Stdin is also supported for one-shot piping:
+
+```sh
+curl -L https://private.example/signed/demo.mdr | ./build/mpxadrv play -
+```
+
+Use the interactive menu against a catalog instead of a local folder:
+
+```sh
+./scripts/mpxadrv-player.command --catalog examples/catalog.example.json
+# or:
+MPXADRV_CATALOG=https://example.com/catalog.json mpxadrv-player
+```
+
+Remote MDR bytes are held in memory during playback. Hybrid songs still write a
+short-lived temporary MDX/PDX file for mdxmini, but nothing is saved beside the
+catalog JSON in your public repository.
+
 ## Usage
 
 Play an MDX file:

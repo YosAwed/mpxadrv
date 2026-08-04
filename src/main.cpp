@@ -2,6 +2,7 @@
 #include <CoreAudio/HostTime.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cerrno>
@@ -33,8 +34,10 @@ extern "C" {
 }
 
 #include "tdx.hpp"
+#include "catalog.hpp"
 #include "compat.hpp"
 #include "core_midi.hpp"
+#include "http.hpp"
 #include "mdr.hpp"
 #include "midi.hpp"
 #include "software_synth.hpp"
@@ -43,7 +46,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "0.6.1";
+constexpr const char* kVersion = "0.7.0";
 constexpr int kDefaultRate = 48'000;
 constexpr int kDefaultLoops = 0;  // 0 = follow the song's L forever
 constexpr std::uint32_t kFramesPerBuffer = 2'048;
@@ -141,8 +144,18 @@ struct Options {
   fs::path tdxFile;
   fs::path soundFont;
   std::string midiDestination;
+  std::string pdxUrl;
   int rate = kDefaultRate;
   int loops = kDefaultLoops;
+  bool inputIsStdin = false;
+  bool catalogTsv = false;
+};
+
+struct MdrInput {
+  fs::path localPath;
+  std::string label;
+  mpxadrv::MdrFile mdr;
+  std::string catalogPdxUrl;
 };
 
 int expansionLoops(const Options& options) {
@@ -172,6 +185,94 @@ int parseInteger(const std::string& value, const char* option) {
   return static_cast<int>(parsed);
 }
 
+bool inputIsMdr(const Options& options) {
+  if (options.inputIsStdin) {
+    return true;
+  }
+  const std::string value = options.input.string();
+  if (mpxadrv::isHttpUrl(value)) {
+    const std::string lower = asciiLower(value);
+    return lower.find(".mdx") == std::string::npos;
+  }
+  return asciiLower(options.input.extension().string()) == ".mdr";
+}
+
+std::string displayNameFromUrl(const std::string& url) {
+  const std::size_t query = url.find('?');
+  const std::string path = query == std::string::npos ? url : url.substr(0, query);
+  const std::size_t slash = path.find_last_of('/');
+  if (slash == std::string::npos || slash + 1 >= path.size()) {
+    return "remote.mdr";
+  }
+  return path.substr(slash + 1);
+}
+
+std::vector<std::uint8_t> readStdinBytes() {
+  std::vector<std::uint8_t> data;
+  std::array<char, 16'384> buffer{};
+  while (true) {
+    const std::size_t read = static_cast<std::size_t>(
+        std::fread(buffer.data(), 1, buffer.size(), stdin));
+    if (read == 0) {
+      break;
+    }
+    data.insert(data.end(), buffer.begin(),
+                buffer.begin() + static_cast<std::ptrdiff_t>(read));
+  }
+  if (data.empty()) {
+    throw CliError("stdin is empty");
+  }
+  if (std::ferror(stdin)) {
+    throw CliError("failed to read MDR data from stdin");
+  }
+  return data;
+}
+
+MdrInput loadMdrInput(const Options& options) {
+  MdrInput input;
+  if (options.inputIsStdin) {
+    input.label = "stdin.mdr";
+    input.mdr = mpxadrv::parseMdrBytes(readStdinBytes());
+    return input;
+  }
+
+  const std::string source = options.input.string();
+  if (mpxadrv::isHttpUrl(source)) {
+    input.label = displayNameFromUrl(source);
+    input.mdr =
+        mpxadrv::parseMdrBytes(mpxadrv::fetchUrl(source));
+    return input;
+  }
+
+  std::error_code error;
+  input.localPath = fs::absolute(options.input, error);
+  if (error || !fs::is_regular_file(input.localPath, error)) {
+    throw CliError("MDR file not found: " + options.input.string());
+  }
+  input.label = input.localPath.filename().string();
+  input.mdr = mpxadrv::loadMdr(input.localPath);
+  return input;
+}
+
+int printCatalog(const Options& options) {
+  const mpxadrv::Catalog catalog =
+      mpxadrv::loadCatalog(options.input.string());
+  for (std::size_t index = 0; index < catalog.songs.size(); ++index) {
+    const mpxadrv::CatalogSong& song = catalog.songs[index];
+    if (options.catalogTsv) {
+      std::cout << (index + 1) << '\t' << song.id << '\t' << song.title << '\t'
+                << song.mdrUrl << '\t' << song.pdxUrl << '\n';
+      continue;
+    }
+    std::cout << (index + 1) << ": " << song.title;
+    if (!song.id.empty() && song.id != song.title) {
+      std::cout << " [" << song.id << "]";
+    }
+    std::cout << '\n';
+  }
+  return 0;
+}
+
 void printUsage(std::ostream& stream) {
   stream
       << "mpxadrv " << kVersion << " - MADRV/MDX player for macOS\n\n"
@@ -184,15 +285,21 @@ void printUsage(std::ostream& stream) {
       << "  mpxadrv midi-synth <file.mdx|file.mdr> [--soundfont <file.sf2|file.dls>] [options]\n"
       << "  mpxadrv midi-list\n"
       << "  mpxadrv midi-play <file.mdx|file.mdr> --destination <index-or-name> [options]\n"
+      << "  mpxadrv catalog <catalog.json|url> [--tsv]\n"
       << "  mpxadrv tdx <file.tdx> [-o <file.pdx>] [options]\n\n"
+      << "Remote MDR input:\n"
+      << "  play/info/render/midi* accept https:// URLs or '-' (stdin).\n"
+      << "  Use --pdx-url <url> when the PCM bank is hosted separately.\n\n"
       << "Options:\n"
       << "  -o, --output <path>    WAV, MIDI, or compiled PDX output path\n"
       << "  -p, --pdx-dir <path>   Additional PDX search directory\n"
+      << "      --pdx-url <url>    Remote PDX for URL/stdin MDR input\n"
       << "      --tdx-file <path>  Override the song's PDX with a TDX definition\n"
       << "      --destination <id> CoreMIDI USB/physical out (play, midi-play)\n"
       << "      --soundfont <path>  SF2/DLS soft synth (play/render/midi-synth)\n"
       << "  -r, --rate <hz>        Sample rate, 8000-192000 (default: 48000)\n"
       << "  -l, --loops <count>    Song L repeats: 0=forever (default), 1-100=finite\n"
+      << "      --tsv              Machine-readable catalog output (catalog only)\n"
       << "  -h, --help             Show this help\n"
       << "      --version          Show version\n";
 }
@@ -215,7 +322,7 @@ Options parseArguments(int argc, char* argv[]) {
   }
   if (first == "play" || first == "info" || first == "render" ||
       first == "midi" || first == "midi-synth" || first == "midi-list" ||
-      first == "midi-play" || first == "tdx") {
+      first == "midi-play" || first == "catalog" || first == "tdx") {
     options.command = first;
     ++index;
   }
@@ -250,20 +357,46 @@ Options parseArguments(int argc, char* argv[]) {
       options.rate = parseInteger(requireValue(argument.c_str()), argument.c_str());
     } else if (argument == "-l" || argument == "--loops") {
       options.loops = parseInteger(requireValue(argument.c_str()), argument.c_str());
+    } else if (argument == "--pdx-url") {
+      options.pdxUrl = requireValue(argument.c_str());
+    } else if (argument == "--tsv") {
+      options.catalogTsv = true;
     } else if (!argument.empty() && argument[0] == '-') {
       throw CliError("unknown option: " + argument);
     } else if (options.input.empty()) {
-      options.input = argument;
+      if (argument == "-") {
+        options.inputIsStdin = true;
+        options.input = "-";
+      } else {
+        options.input = argument;
+      }
     } else {
       throw CliError("only one MDX or MDR file can be processed at a time");
     }
   }
 
   if (options.input.empty() && options.command != "midi-list") {
-    throw CliError("an MDX or MDR file is required");
+    throw CliError(options.command == "catalog"
+                       ? "a catalog JSON path or URL is required"
+                       : "an MDX or MDR file is required");
   }
   if (options.command == "midi-list" && !options.input.empty()) {
     throw CliError("midi-list does not accept an input file");
+  }
+  if (options.command == "catalog") {
+    if (!options.pdxUrl.empty() || !options.pdxDirectory.empty() ||
+        !options.tdxFile.empty() || !options.soundFont.empty() ||
+        !options.midiDestination.empty() || !options.output.empty() ||
+        options.inputIsStdin) {
+      throw CliError("catalog does not accept playback options");
+    }
+    return options;
+  }
+  if (!options.pdxUrl.empty() && !inputIsMdr(options)) {
+    throw CliError("--pdx-url requires MDR input");
+  }
+  if (options.inputIsStdin && !inputIsMdr(options)) {
+    throw CliError("stdin input is only supported for MDR songs");
   }
   if (options.rate < 8'000 || options.rate > 192'000) {
     throw CliError("sample rate must be between 8000 and 192000 Hz");
@@ -296,12 +429,12 @@ Options parseArguments(int argc, char* argv[]) {
     throw CliError("midi-play requires --destination <index-or-name>");
   }
   if (!options.midiDestination.empty() && options.command == "play" &&
-      asciiLower(options.input.extension().string()) != ".mdr") {
+      !inputIsMdr(options)) {
     throw CliError("--destination with play requires an MDR file");
   }
   const bool mdrSoundFont =
       (options.command == "play" || options.command == "render") &&
-      asciiLower(options.input.extension().string()) == ".mdr";
+      inputIsMdr(options);
   if (!options.soundFont.empty() && options.command != "midi-synth" &&
       !mdrSoundFont) {
     throw CliError(
@@ -1057,17 +1190,46 @@ fs::path writeTemporaryMdx(const TemporaryDirectory& temporary,
   return path;
 }
 
-int processMdr(const Options& options) {
-  std::error_code error;
-  const fs::path input = fs::absolute(options.input, error);
-  if (error || !fs::is_regular_file(input, error)) {
-    throw CliError("MDR file not found: " + options.input.string());
+fs::path writeTemporaryBinary(const TemporaryDirectory& temporary,
+                              const std::vector<std::uint8_t>& bytes,
+                              const std::string& filename) {
+  const fs::path path = temporary.path() / filename;
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+  if (!output) {
+    throw CliError("failed to write temporary file: " + path.string());
   }
+  output.close();
+  return path;
+}
+
+fs::path resolveMdrPdx(const mpxadrv::MdrFile& mdr, const MdrInput& input,
+                       const Options& options, TemporaryDirectory& temporary) {
+  const std::string remoteUrl =
+      !options.pdxUrl.empty() ? options.pdxUrl : input.catalogPdxUrl;
+  if (!remoteUrl.empty()) {
+    const std::vector<std::uint8_t> bytes = mpxadrv::fetchUrl(remoteUrl);
+    std::string filename = displayNameFromUrl(remoteUrl);
+    if (asciiLower(fs::path(filename).extension().string()) != ".pdx") {
+      filename = mdr.pdxName.empty() ? "remote.pdx" : mdr.pdxName;
+      if (fs::path(filename).extension().empty()) {
+        filename += ".pdx";
+      }
+    }
+    return writeTemporaryBinary(temporary, bytes, filename);
+  }
+  return locateMdrPdx(mdr, input.localPath, options.pdxDirectory);
+}
+
+int processMdr(const Options& options, MdrInput input) {
   if (!options.tdxFile.empty()) {
     throw CliError("--tdx-file is not supported for MDR input");
   }
 
-  const mpxadrv::MdrFile mdr = mpxadrv::loadMdr(input);
+  const mpxadrv::MdrFile& mdr = input.mdr;
+  const fs::path referencePath =
+      input.localPath.empty() ? fs::path(input.label) : input.localPath;
   const std::string title = shiftJisToUtf8(mdr.title.c_str());
   const mpxadrv::MidiSequence sequence = mpxadrv::convertMadrvMidi(
       mdr.data.data(), mdr.data.size(), mdr.trackOffsets.data(),
@@ -1093,12 +1255,19 @@ int processMdr(const Options& options) {
     if (mdr.pdxName.empty()) {
       std::cout << "PDX: none\n";
     } else {
-      const fs::path pdx = locateMdrPdx(mdr, input, options.pdxDirectory);
+      const std::string remoteUrl =
+          !options.pdxUrl.empty() ? options.pdxUrl : input.catalogPdxUrl;
       std::cout << "PDX: " << shiftJisToUtf8(mdr.pdxName.c_str());
-      if (pdx.empty()) {
-        std::cout << " (not found)\n";
+      if (!remoteUrl.empty()) {
+        std::cout << " (" << remoteUrl << ")\n";
       } else {
-        std::cout << " (" << pdx.string() << ")\n";
+        const fs::path pdx =
+            locateMdrPdx(mdr, referencePath, options.pdxDirectory);
+        if (pdx.empty()) {
+          std::cout << " (not found)\n";
+        } else {
+          std::cout << " (" << pdx.string() << ")\n";
+        }
       }
     }
     if (sequence.tracks.empty()) {
@@ -1118,20 +1287,21 @@ int processMdr(const Options& options) {
 
   if (sequence.tracks.empty() &&
       (options.command == "play" || options.command == "render")) {
-    const fs::path pdx = locateMdrPdx(mdr, input, options.pdxDirectory);
+    TemporaryDirectory temporary;
+    const fs::path pdx = resolveMdrPdx(mdr, input, options, temporary);
     const bool includePdx = canLoadMdrPdx(mdr, pdx);
     const std::vector<std::uint8_t> mdx =
         mpxadrv::makeMdxCompatible(mdr, includePdx);
-    TemporaryDirectory temporary;
-    const fs::path mdxPath = writeTemporaryMdx(temporary, input, mdx);
+    const fs::path mdxPath =
+        writeTemporaryMdx(temporary, referencePath, mdx);
 
     Options compatible = options;
     compatible.input = mdxPath;
     compatible.pdxDirectory =
         !includePdx || pdx.empty() ? options.pdxDirectory : pdx.parent_path();
     Song song(compatible);
-    std::cout << (title.empty() ? input.filename().string() : title) << "  ["
-              << formatDuration(song.duration()) << "]\n";
+    std::cout << (title.empty() ? referencePath.filename().string() : title)
+              << "  [" << formatDuration(song.duration()) << "]\n";
     if (options.command == "render") {
       renderSong(song, options.output);
       std::cout << "Wrote " << fs::absolute(options.output).string() << '\n';
@@ -1148,10 +1318,11 @@ int processMdr(const Options& options) {
       !sequence.tracks.empty() &&
       mpxadrv::countSeparableHardwareTracks(mdr) > 0) {
     try {
+      TemporaryDirectory temporary;
       const std::vector<std::uint8_t> mdx =
           mpxadrv::makeMdxHardwareCompatible(mdr,
                                              makeMdxTempoConductor(sequence));
-      const fs::path pdx = locateMdrPdx(mdr, input, options.pdxDirectory);
+      const fs::path pdx = resolveMdrPdx(mdr, input, options, temporary);
       const bool includePdx = canLoadMdrPdx(mdr, pdx);
       if (!includePdx && !mdr.pdxName.empty()) {
         throw mpxadrv::MdrError(
@@ -1165,15 +1336,15 @@ int processMdr(const Options& options) {
               "hybrid MDR render requires --soundfont <file.sf2> "
               "(FluidSynth offline)");
         }
-        TemporaryDirectory temporary;
-        const fs::path mdxPath = writeTemporaryMdx(temporary, input, mdx);
+        const fs::path mdxPath =
+            writeTemporaryMdx(temporary, referencePath, mdx);
         Options compatible = options;
         compatible.input = mdxPath;
         compatible.pdxDirectory =
             pdx.empty() ? options.pdxDirectory : pdx.parent_path();
         Song hardwareSong(compatible);
         printMidiWarnings(sequence);
-        std::cout << (title.empty() ? input.filename().string() : title)
+        std::cout << (title.empty() ? referencePath.filename().string() : title)
                   << "  [" << formatDuration(durationSeconds) << "]\n"
                   << "Rendering MDR MIDI + FM/PCM to WAV...\n";
         renderHybridSong(hardwareSong, sequence, soundFont, options.output);
@@ -1181,8 +1352,8 @@ int processMdr(const Options& options) {
         return 0;
       }
 
-      TemporaryDirectory temporary;
-      const fs::path mdxPath = writeTemporaryMdx(temporary, input, mdx);
+      const fs::path mdxPath =
+          writeTemporaryMdx(temporary, referencePath, mdx);
       Options compatible = options;
       compatible.input = mdxPath;
       compatible.pdxDirectory =
@@ -1190,8 +1361,8 @@ int processMdr(const Options& options) {
       Song hardwareSong(compatible);
       printMidiWarnings(sequence);
       const bool useExternalMidi = !options.midiDestination.empty();
-      std::cout << (title.empty() ? input.filename().string() : title) << "  ["
-                << formatDuration(durationSeconds) << "]\n"
+      std::cout << (title.empty() ? referencePath.filename().string() : title)
+                << "  [" << formatDuration(durationSeconds) << "]\n"
                 << "Playing MDR "
                 << (useExternalMidi ? "CoreMIDI + FM/PCM"
                                     : "MIDI + FM/PCM")
@@ -1271,8 +1442,8 @@ int processMdr(const Options& options) {
           "MDR MIDI WAV rendering requires --soundfont <file.sf2>");
     }
     printMidiWarnings(sequence);
-    std::cout << (title.empty() ? input.filename().string() : title) << "  ["
-              << formatDuration(durationSeconds) << "]\n"
+    std::cout << (title.empty() ? referencePath.filename().string() : title)
+              << "  [" << formatDuration(durationSeconds) << "]\n"
               << "Rendering MDR MIDI to WAV...\n";
     // Finite render: rebuild FM-less duration from the already-expanded
     // sequence and write FluidSynth alone as stereo PCM.
@@ -1319,8 +1490,8 @@ int processMdr(const Options& options) {
   }
 
   const fs::path soundFont = checkedSoundFont(options.soundFont);
-  std::cout << (title.empty() ? input.filename().string() : title) << "  ["
-            << formatDuration(durationSeconds) << "]\n"
+  std::cout << (title.empty() ? referencePath.filename().string() : title)
+            << "  [" << formatDuration(durationSeconds) << "]\n"
             << "Playing MDR MIDI with the "
             << (soundFont.empty() ? "macOS DLSMusicDevice"
                                   : "FluidSynth SoundFont")
@@ -1369,8 +1540,12 @@ int main(int argc, char* argv[]) {
       return 0;
     }
 
-    if (asciiLower(options.input.extension().string()) == ".mdr") {
-      return processMdr(options);
+    if (options.command == "catalog") {
+      return printCatalog(options);
+    }
+
+    if (inputIsMdr(options)) {
+      return processMdr(options, loadMdrInput(options));
     }
 
     Song song(options);
@@ -1458,6 +1633,12 @@ int main(int argc, char* argv[]) {
     return 2;
   } catch (const mpxadrv::TdxError& error) {
     std::cerr << "mpxadrv: TDX: " << error.what() << '\n';
+    return 2;
+  } catch (const mpxadrv::CatalogError& error) {
+    std::cerr << "mpxadrv: catalog: " << error.what() << '\n';
+    return 2;
+  } catch (const mpxadrv::HttpError& error) {
+    std::cerr << "mpxadrv: HTTP: " << error.what() << '\n';
     return 2;
   } catch (const mpxadrv::MdrError& error) {
     std::cerr << "mpxadrv: MDR: " << error.what() << '\n';

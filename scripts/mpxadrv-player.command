@@ -4,11 +4,63 @@ setopt NO_CASE_GLOB NULL_GLOB
 
 script_path=${0:A}
 repo_dir=${script_path:h:h}
-music_dir=${1:-$PWD}
+catalog_source="${MPXADRV_CATALOG:-}"
+music_dir=""
 player_override=""
 soundfont_override=""
 # Runtime output mode: "" = software, otherwise CoreMIDI selector.
 destination_override="${MPXADRV_DESTINATION:-}"
+catalog_mode=0
+
+while (( $# > 0 )); do
+  case $1 in
+    --catalog)
+      shift
+      if (( $# == 0 )); then
+        print -u2 -- "--catalog には catalog.json か URL を指定してください。"
+        exit 1
+      fi
+      catalog_source=$1
+      catalog_mode=1
+      shift
+      ;;
+    -h|--help)
+      print -- "使い方: mpxadrv-player [フォルダー]"
+      print -- "       mpxadrv-player --catalog <catalog.json|url>"
+      print -- "環境変数: MPXADRV_CATALOG, MPXADRV_BIN, MPXADRV_SOUNDFONT, MPXADRV_DESTINATION"
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      print -u2 -- "不明なオプション: $1"
+      exit 1
+      ;;
+    *)
+      if [[ -z "$music_dir" ]]; then
+        music_dir=$1
+      else
+        print -u2 -- "引数が多すぎます: $1"
+        exit 1
+      fi
+      shift
+      ;;
+  esac
+done
+
+if (( catalog_mode == 0 && -z "$catalog_source" )); then
+  music_dir=${music_dir:-$PWD}
+  if [[ ! -d "$music_dir" ]]; then
+    print -u2 -- "フォルダーが見つかりません: $music_dir"
+    exit 1
+  fi
+  cd -- "$music_dir" || exit 1
+elif [[ -z "$catalog_source" ]]; then
+  print -u2 -- "カタログが指定されていません。"
+  exit 1
+fi
 
 if [[ -n "${MPXADRV_BIN:-}" ]]; then
   player_override=${MPXADRV_BIN:A}
@@ -16,12 +68,6 @@ fi
 if [[ -n "${MPXADRV_SOUNDFONT:-}" ]]; then
   soundfont_override=${MPXADRV_SOUNDFONT:A}
 fi
-
-if [[ ! -d "$music_dir" ]]; then
-  print -u2 -- "フォルダーが見つかりません: $music_dir"
-  exit 1
-fi
-cd -- "$music_dir" || exit 1
 
 if [[ -n "$player_override" ]]; then
   if [[ ! -x "$player_override" ]]; then
@@ -57,29 +103,54 @@ fi
 soundfont=$default_soundfont
 
 all_files=()
+catalog_mdr=()
+catalog_pdx=()
 visible=()
+visible_indices=()
 filter=""
 page=1
 status_message=""
 play_command=()
+selected_label=""
 
 reload_files() {
-  all_files=( *.mdr *.mdx )
-  all_files=( ${(on)all_files} )
+  all_files=()
+  catalog_mdr=()
+  catalog_pdx=()
+  if (( catalog_mode )); then
+    local line index id title mdr_url pdx_url
+    while IFS=$'\t' read -r index id title mdr_url pdx_url; do
+      [[ -z "$index" ]] && continue
+      all_files+=( "$title" )
+      catalog_mdr+=( "$mdr_url" )
+      catalog_pdx+=( "$pdx_url" )
+    done < <("$player" catalog "$catalog_source" --tsv 2>/dev/null)
+  else
+    all_files=( *.mdr *.mdx )
+    all_files=( ${(on)all_files} )
+  fi
   apply_filter
 }
 
 apply_filter() {
+  visible=()
+  visible_indices=()
   if [[ -z "$filter" ]]; then
-    visible=( "${all_files[@]}" )
+    local i
+    for (( i = 1; i <= ${#all_files}; ++i )); do
+      visible+=( "${all_files[i]}" )
+      visible_indices+=( $i )
+    done
   else
-    visible=()
     local file lower
     local needle=${(L)filter}
-    for file in "${all_files[@]}"; do
+    local i
+    for (( i = 1; i <= ${#all_files}; ++i )); do
+      file=${all_files[i]}
       lower=${(L)file}
       if [[ "$lower" == *"$needle"* ]]; then
         visible+=( "$file" )
+        visible_indices+=( $i )
       fi
     done
   fi
@@ -134,7 +205,11 @@ draw_menu() {
 
   clear 2>/dev/null || true
   print -- "mpxadrv 選曲メニュー"
-  print -- "フォルダー: $PWD"
+  if (( catalog_mode )); then
+    print -- "カタログ: $catalog_source"
+  else
+    print -- "フォルダー: $PWD"
+  fi
   print -- "出力: $(output_label)"
   if [[ -n "$filter" ]]; then
     print -- "絞り込み: /$filter  （該当: ${#visible} / 全${#all_files}）"
@@ -153,7 +228,11 @@ draw_menu() {
 
   if (( ${#visible} == 0 )); then
     if (( ${#all_files} == 0 )); then
-      print -- ".MDR／.MDXファイルがありません。"
+      if (( catalog_mode )); then
+        print -- "カタログに曲がありません。"
+      else
+        print -- ".MDR／.MDXファイルがありません。"
+      fi
     else
       print -- "絞り込みに一致する曲がありません。"
     fi
@@ -222,14 +301,35 @@ choose_destination() {
 }
 
 build_play_command() {
-  local selected=$1
-  play_command=( "$player" play "$selected" )
-  if [[ "${(L)selected}" == *.mdr ]]; then
-    if [[ -n "$destination_override" ]]; then
-      play_command+=( --destination "$destination_override" )
-    elif [[ -n "$soundfont" ]]; then
-      play_command+=( --soundfont "$soundfont" )
+  local menu_index=$1
+  local source_index=${visible_indices[menu_index]}
+  selected_label=${visible[menu_index]}
+
+  if (( catalog_mode )); then
+    local mdr_url=${catalog_mdr[source_index]}
+    local pdx_url=${catalog_pdx[source_index]}
+    play_command=( "$player" play "$mdr_url" )
+    if [[ -n "$pdx_url" ]]; then
+      play_command+=( --pdx-url "$pdx_url" )
     fi
+  else
+    local selected=${all_files[source_index]}
+    selected_label=$selected
+    play_command=( "$player" play "$selected" )
+    if [[ "${(L)selected}" == *.mdr ]]; then
+      if [[ -n "$destination_override" ]]; then
+        play_command+=( --destination "$destination_override" )
+      elif [[ -n "$soundfont" ]]; then
+        play_command+=( --soundfont "$soundfont" )
+      fi
+    fi
+    return
+  fi
+
+  if [[ -n "$destination_override" ]]; then
+    play_command+=( --destination "$destination_override" )
+  elif [[ -n "$soundfont" ]]; then
+    play_command+=( --soundfont "$soundfont" )
   fi
 }
 
@@ -304,11 +404,10 @@ while true; do
     continue
   fi
 
-  selected=${visible[choice]}
-  build_play_command "$selected"
+  build_play_command $choice
 
   print
-  print -- "再生: $selected"
+  print -- "再生: $selected_label"
   print -- "出力: $(output_label)"
   print -- "コマンド: ${play_command[*]}"
   print -- "（Ctrl-C で停止してメニューへ戻ります）"
@@ -317,6 +416,6 @@ while true; do
   if (( exit_code != 0 && exit_code != 130 )); then
     status_message="再生に失敗しました（終了コード: $exit_code）"
   else
-    status_message="停止: $selected / $(output_label)"
+    status_message="停止: $selected_label / $(output_label)"
   fi
 done

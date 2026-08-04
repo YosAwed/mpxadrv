@@ -342,18 +342,25 @@ std::array<int, 16> findHardwareTrackSources(const MdrFile& mdr) {
 
 }  // namespace
 
-MdrFile loadMdr(const std::filesystem::path& path) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input) {
-    throw MdrError("MDR file not found: " + path.string());
+std::string peekMdrTitle(const std::vector<std::uint8_t>& data) {
+  const std::array<std::uint8_t, 3> titleEnd = {0x0d, 0x0a, 0x1a};
+  const auto marker =
+      std::search(data.begin(), data.end(), titleEnd.begin(), titleEnd.end());
+  if (marker == data.end()) {
+    return {};
+  }
+  const std::size_t titleLength =
+      static_cast<std::size_t>(marker - data.begin());
+  return std::string(reinterpret_cast<const char*>(data.data()), titleLength);
+}
+
+MdrFile parseMdrBytes(std::vector<std::uint8_t> data) {
+  if (data.empty()) {
+    throw MdrError("MDR data is empty");
   }
 
   MdrFile result;
-  result.data.assign(std::istreambuf_iterator<char>(input),
-                     std::istreambuf_iterator<char>());
-  if (result.data.empty()) {
-    throw MdrError("MDR file is empty: " + path.string());
-  }
+  result.data = std::move(data);
 
   const std::array<std::uint8_t, 3> titleEnd = {0x0d, 0x0a, 0x1a};
   const auto marker = std::search(result.data.begin(), result.data.end(),
@@ -431,6 +438,19 @@ MdrFile loadMdr(const std::filesystem::path& path) {
   }
 
   return result;
+}
+
+MdrFile loadMdr(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    throw MdrError("MDR file not found: " + path.string());
+  }
+  std::vector<std::uint8_t> data((std::istreambuf_iterator<char>(input)),
+                                 std::istreambuf_iterator<char>());
+  if (data.empty()) {
+    throw MdrError("MDR file is empty: " + path.string());
+  }
+  return parseMdrBytes(std::move(data));
 }
 
 int countSeparableHardwareTracks(const MdrFile& mdr) {
