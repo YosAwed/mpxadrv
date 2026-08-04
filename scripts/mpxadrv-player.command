@@ -379,10 +379,21 @@ reload_files
 while true; do
   draw_menu
   status_message=""
-  read "choice? > " || exit 0
+  read -r "choice? > " || {
+    print -- "終了しました。"
+    exit 0
+  }
+  # Strip CR from pastes / Terminal oddities.
+  choice=${choice%$'\r'}
+  # Ignore accidental cmake/Ninja progress lines pasted into the prompt.
+  if [[ "$choice" == \[*\%*\]* || "$choice" == '[ '* ]]; then
+    status_message="ビルドログの貼り付けを無視しました"
+    continue
+  fi
 
   case ${(L)choice} in
     q|quit|exit)
+      print -- "終了しました。"
       exit 0
       ;;
     r|reload)
