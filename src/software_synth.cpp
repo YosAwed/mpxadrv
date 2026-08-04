@@ -403,6 +403,7 @@ class SoftwareSynthPlayer::Impl {
   std::unique_ptr<SoftwareSynthGraph> apple;
   std::unique_ptr<FluidSynthGraph> fluid;
   std::vector<ScheduledMidiEvent> events;
+  std::vector<std::vector<std::uint8_t>> loopRestore;
   std::uint64_t loopStartUs = std::numeric_limits<std::uint64_t>::max();
   bool infinite = false;
 };
@@ -434,6 +435,9 @@ void SoftwareSynthPlayer::prepare(const MidiSequence& sequence, bool infinite,
           ? midiTickMicroseconds(sequence, sequence.loopStartTick,
                                  syncSampleRate)
           : std::numeric_limits<std::uint64_t>::max();
+  impl_->loopRestore =
+      impl_->infinite ? midiLoopRestoreMessages(sequence)
+                      : std::vector<std::vector<std::uint8_t>>{};
 }
 
 void SoftwareSynthPlayer::playAt(
@@ -452,7 +456,7 @@ void SoftwareSynthPlayer::playPreparedAt(
     playScheduledMidiEvents(
         impl_->events, impl_->loopStartUs, impl_->infinite, start, shouldStop,
         [&](const std::vector<std::uint8_t>& bytes) { impl_->send(bytes); },
-        songClock, lead);
+        songClock, lead, impl_->loopRestore);
   } catch (...) {
     impl_->allNotesOff();
     throw;

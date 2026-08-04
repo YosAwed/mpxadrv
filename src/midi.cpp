@@ -4,6 +4,7 @@
 #include <array>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -983,10 +984,10 @@ MidiSequence convertMadrvMidiWithLimits(
   return sequence;
 }
 
-// Tracks often carry different L periods. Wrapping every track from the earliest
-// F1 leaves short-period parts silent for most of a long cycle (and desyncs the
-// hybrid FM path). Expand short tracks to cover the longest looping period and
-// wrap from that master loop point instead.
+// Tracks often carry different L periods. Wrapping from the earliest F1 leaves
+// short-period parts silent (and desyncs hybrid FM). Prefer the *majority*
+// period as the song cycle, expand only compatible short tracks into that
+// window, and wrap from that master loop point.
 void alignSongLoopCycle(const std::uint8_t* data, std::size_t length,
                         const int* trackOffsets, int trackCount, int loops,
                         MidiSequence& sequence) {
@@ -1020,12 +1021,35 @@ void alignSongLoopCycle(const std::uint8_t* data, std::size_t length,
     }
   }
 
-  std::uint64_t masterPeriod = 0;
+  // Majority period (tie -> longer). Avoid one-off outliers such as a single
+  // track whose measured period is twice everyone else's.
+  std::map<std::uint64_t, int> votes;
   for (std::uint64_t value : period) {
-    masterPeriod = std::max(masterPeriod, value);
+    if (value > 0) {
+      ++votes[value];
+    }
+  }
+  std::uint64_t masterPeriod = 0;
+  int bestVotes = 0;
+  for (const auto& entry : votes) {
+    const std::uint64_t value = entry.first;
+    const int count = entry.second;
+    if (count > bestVotes || (count == bestVotes && value > masterPeriod)) {
+      bestVotes = count;
+      masterPeriod = value;
+    }
   }
   if (masterPeriod == 0) {
     return;
+  }
+  // If a longer period is an exact multiple of the majority (common in MDR
+  // A/B phrase forms), wrap on that longer cycle so hybrid FM stays aligned.
+  for (const auto& entry : votes) {
+    const std::uint64_t value = entry.first;
+    if (value > masterPeriod && value / masterPeriod <= 4 &&
+        value % masterPeriod == 0) {
+      masterPeriod = value;
+    }
   }
 
   std::uint64_t masterLoopStart = sequence.loopStartTick;
@@ -1036,7 +1060,7 @@ void alignSongLoopCycle(const std::uint8_t* data, std::size_t length,
       continue;
     }
     const std::uint64_t candidate = endOnce[index] - masterPeriod;
-    if (!foundMaster || candidate > masterLoopStart) {
+    if (!foundMaster || candidate < masterLoopStart) {
       masterLoopStart = candidate;
       foundMaster = true;
     }
@@ -1045,25 +1069,37 @@ void alignSongLoopCycle(const std::uint8_t* data, std::size_t length,
     return;
   }
 
+  constexpr int kMaxExpand = 64;
+  const std::uint64_t minExpandablePeriod =
+      std::max<std::uint64_t>(1, masterPeriod / 32);
   const std::uint64_t targetEnd =
       masterLoopStart + masterPeriod * static_cast<std::uint64_t>(loops);
   std::vector<int> limits(static_cast<std::size_t>(trackCount), loops);
   bool needsRefill = masterLoopStart != sequence.loopStartTick;
   for (int track = 0; track < trackCount; ++track) {
     const std::size_t index = static_cast<std::size_t>(track);
-    if (period[index] == 0) {
+    const std::uint64_t trackPeriod = period[index];
+    if (trackPeriod == 0 || trackPeriod == masterPeriod) {
       continue;
     }
-    // end(n) ~= end(1) + (n - 1) * period
+    // Tiny periods (e.g. 2-tick L) must not be unrolled across the master.
+    if (trackPeriod < minExpandablePeriod) {
+      continue;
+    }
     int need = loops;
-    while (need < 4096) {
+    bool reached = false;
+    while (need <= kMaxExpand) {
       const std::uint64_t projected =
           endOnce[index] +
-          static_cast<std::uint64_t>(need - 1) * period[index];
+          static_cast<std::uint64_t>(need - 1) * trackPeriod;
       if (projected >= targetEnd) {
+        reached = true;
         break;
       }
       ++need;
+    }
+    if (!reached) {
+      continue;
     }
     if (need != loops) {
       needsRefill = true;
@@ -1072,6 +1108,9 @@ void alignSongLoopCycle(const std::uint8_t* data, std::size_t length,
   }
   if (!needsRefill) {
     sequence.loopStartTick = masterLoopStart;
+    if (sequence.endTick > targetEnd) {
+      sequence.endTick = targetEnd;
+    }
     return;
   }
 
@@ -1079,8 +1118,6 @@ void alignSongLoopCycle(const std::uint8_t* data, std::size_t length,
                                         limits);
   sequence.hasSongLoop = true;
   sequence.loopStartTick = masterLoopStart;
-  // Drop any trailing partial cycle so the player wrap length equals one
-  // master period (times the requested loop count).
   if (sequence.endTick > targetEnd) {
     sequence.endTick = targetEnd;
     for (MidiTrack& track : sequence.tracks) {
@@ -1262,13 +1299,109 @@ std::uint64_t midiTickMicroseconds(const MidiSequence& sequence,
          remain * (256u * (256u - static_cast<unsigned>(tempo)));
 }
 
+std::vector<std::vector<std::uint8_t>> midiLoopRestoreMessages(
+    const MidiSequence& sequence) {
+  struct ChannelState {
+    int bankMsb = -1;
+    int bankLsb = -1;
+    int program = -1;
+    int volume = -1;
+    int expression = -1;
+    int pan = -1;
+    int reverb = -1;
+    int chorus = -1;
+  };
+  std::array<ChannelState, 16> channels{};
+  if (!sequence.hasSongLoop) {
+    return {};
+  }
+  for (const MidiTrack& track : sequence.tracks) {
+    for (const MidiEvent& event : track.events) {
+      if (event.tick >= sequence.loopStartTick || event.bytes.empty()) {
+        continue;
+      }
+      const std::uint8_t status = event.bytes[0];
+      if (status < 0x80 || status >= 0xf0) {
+        continue;
+      }
+      const int channel = status & 0x0f;
+      const std::uint8_t kind = status & 0xf0;
+      ChannelState& state = channels[static_cast<std::size_t>(channel)];
+      if (kind == 0xc0 && event.bytes.size() >= 2) {
+        state.program = event.bytes[1] & 0x7f;
+      } else if (kind == 0xb0 && event.bytes.size() >= 3) {
+        const int controller = event.bytes[1];
+        const int value = event.bytes[2] & 0x7f;
+        switch (controller) {
+          case 0:
+            state.bankMsb = value;
+            break;
+          case 32:
+            state.bankLsb = value;
+            break;
+          case 7:
+            state.volume = value;
+            break;
+          case 11:
+            state.expression = value;
+            break;
+          case 10:
+            state.pan = value;
+            break;
+          case 91:
+            state.reverb = value;
+            break;
+          case 93:
+            state.chorus = value;
+            break;
+          default:
+            break;
+        }
+      }
+    }
+  }
+
+  std::vector<std::vector<std::uint8_t>> messages;
+  for (int channel = 0; channel < 16; ++channel) {
+    const ChannelState& state = channels[static_cast<std::size_t>(channel)];
+    const std::uint8_t cc = static_cast<std::uint8_t>(0xb0 | channel);
+    const std::uint8_t pc = static_cast<std::uint8_t>(0xc0 | channel);
+    if (state.bankMsb >= 0) {
+      messages.push_back({cc, 0, static_cast<std::uint8_t>(state.bankMsb)});
+    }
+    if (state.bankLsb >= 0) {
+      messages.push_back({cc, 32, static_cast<std::uint8_t>(state.bankLsb)});
+    }
+    if (state.program >= 0) {
+      messages.push_back({pc, static_cast<std::uint8_t>(state.program)});
+    }
+    if (state.volume >= 0) {
+      messages.push_back({cc, 7, static_cast<std::uint8_t>(state.volume)});
+    }
+    if (state.expression >= 0) {
+      messages.push_back({cc, 11, static_cast<std::uint8_t>(state.expression)});
+    }
+    if (state.pan >= 0) {
+      messages.push_back({cc, 10, static_cast<std::uint8_t>(state.pan)});
+    }
+    if (state.reverb >= 0) {
+      messages.push_back({cc, 91, static_cast<std::uint8_t>(state.reverb)});
+    }
+    if (state.chorus >= 0) {
+      messages.push_back({cc, 93, static_cast<std::uint8_t>(state.chorus)});
+    }
+  }
+  return messages;
+}
+
 void playScheduledMidiEvents(
     const std::vector<ScheduledMidiEvent>& events,
     std::uint64_t loopStartUs, bool infinite,
     std::chrono::steady_clock::time_point start,
     const std::function<bool()>& shouldStop,
     const std::function<void(const std::vector<std::uint8_t>&)>& send,
-    const SongPositionClock& songClock, std::chrono::microseconds lead) {
+    const SongPositionClock& songClock, std::chrono::microseconds lead,
+    const std::vector<std::vector<std::uint8_t>>& loopRestore) {
   if (events.empty()) {
     return;
   }
@@ -1325,15 +1458,18 @@ void playScheduledMidiEvents(
     }
   };
 
-  auto silenceForLoop = [&] {
-    // Clear stuck notes / sustain / pitch bend before restarting the cycle.
+  auto resetForLoop = [&] {
+    // Release sounding notes without CC120 All Sound Off, which some soft
+    // synths treat as a hard mute until programs are rewritten.
     for (int channel = 0; channel < 16; ++channel) {
       const std::uint8_t status =
           static_cast<std::uint8_t>(0xb0 | channel);
       send({status, 64, 0});
       send({status, 123, 0});
-      send({status, 120, 0});
       send({static_cast<std::uint8_t>(0xe0 | channel), 0x00, 0x40});
+    }
+    for (const std::vector<std::uint8_t>& message : loopRestore) {
+      send(message);
     }
   };
 
@@ -1345,7 +1481,7 @@ void playScheduledMidiEvents(
       if (!canLoop) {
         break;
       }
-      silenceForLoop();
+      resetForLoop();
       index = loopIndex;
       firstPass = false;
       if (useAudioClock && songClock) {

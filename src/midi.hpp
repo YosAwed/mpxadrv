@@ -78,6 +78,11 @@ std::uint64_t midiTickMicroseconds(const MidiSequence& sequence,
 // buffer compensation.
 using SongPositionClock = std::function<std::int64_t()>;
 
+// Channel setup captured before loopStartTick so infinite playback can restore
+// bank/program/volume after notes are cleared at each cycle boundary.
+std::vector<std::vector<std::uint8_t>> midiLoopRestoreMessages(
+    const MidiSequence& sequence);
+
 void playScheduledMidiEvents(
     const std::vector<ScheduledMidiEvent>& events,
     std::uint64_t loopStartUs, bool infinite,
@@ -85,7 +90,8 @@ void playScheduledMidiEvents(
     const std::function<bool()>& shouldStop,
     const std::function<void(const std::vector<std::uint8_t>&)>& send,
     const SongPositionClock& songClock = {},
-    std::chrono::microseconds lead = std::chrono::microseconds(0));
+    std::chrono::microseconds lead = std::chrono::microseconds(0),
+    const std::vector<std::vector<std::uint8_t>>& loopRestore = {});
 
 void writeStandardMidi(const MidiSequence& sequence,
                        const std::filesystem::path& path,

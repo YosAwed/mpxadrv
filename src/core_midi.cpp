@@ -195,6 +195,7 @@ class CoreMidiPlayer::Impl {
   MidiHandles handles;
   MIDIEndpointRef destination = 0;
   std::vector<ScheduledMidiEvent> events;
+  std::vector<std::vector<std::uint8_t>> loopRestore;
   std::uint64_t loopStartUs = std::numeric_limits<std::uint64_t>::max();
   bool infinite = false;
 };
@@ -220,6 +221,9 @@ void CoreMidiPlayer::prepare(const MidiSequence& sequence, bool infinite,
           ? midiTickMicroseconds(sequence, sequence.loopStartTick,
                                  syncSampleRate)
           : std::numeric_limits<std::uint64_t>::max();
+  impl_->loopRestore =
+      impl_->infinite ? midiLoopRestoreMessages(sequence)
+                      : std::vector<std::vector<std::uint8_t>>{};
   // Settle the module before the hybrid FM/PCM clock is armed.
   sendGsReset(impl_->handles.port, impl_->destination);
 }
@@ -240,7 +244,7 @@ void CoreMidiPlayer::playPreparedAt(
     playScheduledMidiEvents(
         impl_->events, impl_->loopStartUs, impl_->infinite, start, shouldStop,
         [&](const std::vector<std::uint8_t>& bytes) { impl_->send(bytes); },
-        songClock, lead);
+        songClock, lead, impl_->loopRestore);
   } catch (...) {
     impl_->silence();
     throw;
