@@ -3,3 +3,5 @@
 /Reference/
 /SoundFonts/
 /r2-stage/
+/node_modules/
+/package-lock.json
