@@ -68,6 +68,10 @@ resolve_path() {
     print -n -- ""
     return
   fi
+  # Expand leading ~ manually; :A alone does not treat ~/foo as home.
+  if [[ "$value" == '~' || "$value" == '~/'* ]]; then
+    value="${HOME}${value#\~}"
+  fi
   if [[ "$value" == /* ]]; then
     print -n -- "$value"
     return
@@ -106,15 +110,22 @@ if [[ -n "$destination_override" && -n "$soundfont_override" ]]; then
   exit 1
 fi
 
+repo_default_soundfont="$repo_dir/SoundFonts/Roland_SC-55.sf2"
 default_soundfont=""
+soundfont_warning=""
 if [[ -n "$soundfont_override" ]]; then
-  if [[ ! -f "$soundfont_override" ]]; then
+  if [[ -f "$soundfont_override" ]]; then
+    default_soundfont=$soundfont_override
+  elif [[ -f "$repo_default_soundfont" ]]; then
+    soundfont_warning="MPXADRV_SOUNDFONT 不在 → リポジトリの SoundFont を使用"
+    default_soundfont=$repo_default_soundfont
+  else
     print -u2 -- "SoundFontが見つかりません: $soundfont_override"
+    print -u2 -- "例: export MPXADRV_SOUNDFONT=\"$repo_default_soundfont\""
     exit 1
   fi
-  default_soundfont=$soundfont_override
-elif [[ -f "$repo_dir/SoundFonts/Roland_SC-55.sf2" ]]; then
-  default_soundfont="$repo_dir/SoundFonts/Roland_SC-55.sf2"
+elif [[ -f "$repo_default_soundfont" ]]; then
+  default_soundfont=$repo_default_soundfont
 fi
 # Active software bank (used when destination is empty).
 soundfont=$default_soundfont
@@ -126,7 +137,7 @@ visible=()
 visible_indices=()
 filter=""
 page=1
-status_message=""
+status_message="${soundfont_warning}"
 play_command=()
 selected_label=""
 
