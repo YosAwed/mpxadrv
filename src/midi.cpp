@@ -1426,6 +1426,11 @@ void playScheduledMidiEvents(
   bool useAudioClock = false;
   std::size_t index = 0;
   bool firstPass = true;
+  // Track live note-ons so loop wraps only need a few Note Offs instead of a
+  // large All-Notes-Off + program restore flush (which occasionally delays the
+  // next downbeat, often a crash cymbal).
+  std::array<std::array<bool, 128>, 16> sounding{};
+  (void)loopRestore;
 
   auto waitForEvent = [&](std::uint64_t eventUs) {
     const std::int64_t songTarget =
@@ -1458,18 +1463,44 @@ void playScheduledMidiEvents(
     }
   };
 
-  auto resetForLoop = [&] {
-    // Release sounding notes without CC120 All Sound Off, which some soft
-    // synths treat as a hard mute until programs are rewritten.
-    for (int channel = 0; channel < 16; ++channel) {
-      const std::uint8_t status =
-          static_cast<std::uint8_t>(0xb0 | channel);
-      send({status, 64, 0});
-      send({status, 123, 0});
-      send({static_cast<std::uint8_t>(0xe0 | channel), 0x00, 0x40});
+  auto observeMessage = [&](const std::vector<std::uint8_t>& message) {
+    if (message.size() < 2) {
+      return;
     }
-    for (const std::vector<std::uint8_t>& message : loopRestore) {
-      send(message);
+    const std::uint8_t status = message[0];
+    if (status < 0x80 || status >= 0xf0) {
+      return;
+    }
+    const int channel = status & 0x0f;
+    const std::uint8_t kind = status & 0xf0;
+    if (kind == 0x90 && message.size() >= 3) {
+      const int key = message[1] & 0x7f;
+      sounding[static_cast<std::size_t>(channel)][static_cast<std::size_t>(key)] =
+          message[2] != 0;
+    } else if (kind == 0x80 && message.size() >= 2) {
+      const int key = message[1] & 0x7f;
+      sounding[static_cast<std::size_t>(channel)][static_cast<std::size_t>(key)] =
+          false;
+    }
+  };
+
+  auto resetForLoop = [&] {
+    // Light wrap: only release notes that are still marked on. Leave the drum
+    // channel alone so open crash/ride at the loop point is not choked.
+    for (int channel = 0; channel < 16; ++channel) {
+      if (channel == 9) {
+        continue;
+      }
+      for (int key = 0; key < 128; ++key) {
+        if (!sounding[static_cast<std::size_t>(channel)]
+                     [static_cast<std::size_t>(key)]) {
+          continue;
+        }
+        send({static_cast<std::uint8_t>(0x80 | channel),
+              static_cast<std::uint8_t>(key), 0x00});
+        sounding[static_cast<std::size_t>(channel)]
+                [static_cast<std::size_t>(key)] = false;
+      }
     }
   };
 
@@ -1481,18 +1512,25 @@ void playScheduledMidiEvents(
       if (!canLoop) {
         break;
       }
+      const std::uint64_t cycleEndUs = events.back().microseconds;
+      // Re-anchor using the audio clock from *before* the wrap flush so reset
+      // latency cannot accumulate into later cycles. Fall back to the musical
+      // period when the audio clock is unavailable.
+      if (useAudioClock && songClock) {
+        const std::int64_t wrapAudio = songClock();
+        if (wrapAudio >= 0) {
+          cycleBase =
+              wrapAudio - static_cast<std::int64_t>(loopStartUs);
+        } else {
+          cycleBase += static_cast<std::int64_t>(cycleEndUs) -
+                       static_cast<std::int64_t>(loopStartUs);
+        }
+      } else {
+        timeOrigin += std::chrono::microseconds(cycleEndUs - loopStartUs);
+      }
       resetForLoop();
       index = loopIndex;
       firstPass = false;
-      if (useAudioClock && songClock) {
-        const std::int64_t audioUs = songClock();
-        if (audioUs >= 0) {
-          cycleBase = audioUs - static_cast<std::int64_t>(loopStartUs);
-        }
-      } else {
-        timeOrigin = std::chrono::steady_clock::now() -
-                     std::chrono::microseconds(loopStartUs);
-      }
       continue;
     }
     const ScheduledMidiEvent& event = events[index++];
@@ -1504,6 +1542,7 @@ void playScheduledMidiEvents(
       break;
     }
     send(event.bytes);
+    observeMessage(event.bytes);
   }
   if (!(shouldStop && shouldStop()) && !canLoop) {
     std::this_thread::sleep_for(std::chrono::milliseconds(750));
