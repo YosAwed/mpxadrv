@@ -1,3 +1,9 @@
+## mpxadrv 0.7.0
+
+- Remote MDR catalog / URL playback
+- MIDI song-loop alignment across mixed L periods
+- Tighter infinite-loop downbeats (less late crash cymbals)
+
 Install with Homebrew:
 
 ```sh

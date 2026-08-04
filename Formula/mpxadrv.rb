@@ -1,8 +1,8 @@
 class Mpxadrv < Formula
   desc "Native macOS CLI player for MADRV/MXDRV MDX and MDR music"
   homepage "https://github.com/YosAwed/mpxadrv"
-  url "https://github.com/YosAwed/mpxadrv/archive/refs/tags/v0.6.1.tar.gz"
-  sha256 "6552485046bf135f3232cc9b865118edb908a4e4a1b9d11e8912e258561d71d6"
+  url "https://github.com/YosAwed/mpxadrv/archive/refs/tags/v0.7.0.tar.gz"
+  sha256 "777da90237d18c436a01044d2f0170e1c6704e6fc2a8e0aa1a651bea421ef654"
   license :cannot_represent
   head "https://github.com/YosAwed/mpxadrv.git", branch: "main"
 
