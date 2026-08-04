@@ -43,6 +43,21 @@ int main() {
     require(catalog.songs[1].pdxUrl == "https://example.test/bank.pdx",
             "second song pdx URL is wrong");
 
+    const char* tabby = R"({
+      "version": 1,
+      "songs": [
+        {
+          "id": "cam",
+          "title": "CAMMY\tCHERRY",
+          "mdr": "https://example.test/CAM_SC.MDR"
+        }
+      ]
+    })";
+    const mpxadrv::Catalog sanitized = mpxadrv::parseCatalogJson(tabby);
+    require(sanitized.songs.size() == 1, "tab title catalog size wrong");
+    require(sanitized.songs[0].title == "CAMMY CHERRY",
+            "embedded TAB in title was not sanitized");
+
     bool rejected = false;
     try {
       static_cast<void>(mpxadrv::parseCatalogJson("{\"tracks\":[]}"));

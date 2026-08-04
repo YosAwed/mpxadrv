@@ -257,16 +257,25 @@ MdrInput loadMdrInput(const Options& options) {
 int printCatalog(const Options& options) {
   const mpxadrv::Catalog catalog =
       mpxadrv::loadCatalog(options.input.string());
+  auto sanitizeField = [](std::string value) {
+    for (char& character : value) {
+      if (character == '\t' || character == '\n' || character == '\r') {
+        character = ' ';
+      }
+    }
+    return value;
+  };
   for (std::size_t index = 0; index < catalog.songs.size(); ++index) {
     const mpxadrv::CatalogSong& song = catalog.songs[index];
     if (options.catalogTsv) {
-      std::cout << (index + 1) << '\t' << song.id << '\t' << song.title << '\t'
-                << song.mdrUrl << '\t' << song.pdxUrl << '\n';
+      std::cout << (index + 1) << '\t' << sanitizeField(song.id) << '\t'
+                << sanitizeField(song.title) << '\t' << song.mdrUrl << '\t'
+                << song.pdxUrl << '\n';
       continue;
     }
-    std::cout << (index + 1) << ": " << song.title;
+    std::cout << (index + 1) << ": " << sanitizeField(song.title);
     if (!song.id.empty() && song.id != song.title) {
-      std::cout << " [" << song.id << "]";
+      std::cout << " [" << sanitizeField(song.id) << "]";
     }
     std::cout << '\n';
   }

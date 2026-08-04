@@ -127,6 +127,15 @@ std::optional<std::string> readObjectString(const std::string& object,
   return parseJsonString(object, position);
 }
 
+void sanitizeCatalogText(std::string& value) {
+  // catalog --tsv is tab-separated; keep display fields free of control chars.
+  for (char& character : value) {
+    if (character == '\t' || character == '\n' || character == '\r') {
+      character = ' ';
+    }
+  }
+}
+
 CatalogSong parseSongObject(const std::string& object) {
   CatalogSong song;
   if (const std::optional<std::string> id = readObjectString(object, "id")) {
@@ -148,6 +157,8 @@ CatalogSong parseSongObject(const std::string& object) {
   if (song.title.empty()) {
     song.title = song.id.empty() ? song.mdrUrl : song.id;
   }
+  sanitizeCatalogText(song.id);
+  sanitizeCatalogText(song.title);
   return song;
 }
 

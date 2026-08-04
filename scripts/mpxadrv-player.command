@@ -146,11 +146,26 @@ reload_files() {
   catalog_mdr=()
   catalog_pdx=()
   if (( catalog_mode )); then
-    local index id title mdr_url pdx_url
-    while IFS=$'\t' read -r index id title mdr_url pdx_url; do
+    local index id title mdr_url pdx_url rest
+    while IFS=$'\t' read -r index id title mdr_url pdx_url rest; do
       # Ignore banners / blank lines; only numbered TSV rows count.
       [[ "$index" == <-> ]] || continue
-      [[ -n "$mdr_url" ]] || continue
+      # Titles may historically contain stray TABs; recover the MDR URL field.
+      if [[ "$mdr_url" != http://* && "$mdr_url" != https://* ]]; then
+        local candidate
+        for candidate in "$mdr_url" "$pdx_url" ${(s:\t:)rest}; do
+          if [[ "$candidate" == http://* || "$candidate" == https://* ]]; then
+            if [[ "$candidate" == *.mdr || "$candidate" == *.MDR ]]; then
+              mdr_url=$candidate
+            elif [[ "$candidate" == *.pdx || "$candidate" == *.PDX ]]; then
+              pdx_url=$candidate
+            elif [[ -z "$mdr_url" || "$mdr_url" != http* ]]; then
+              mdr_url=$candidate
+            fi
+          fi
+        done
+      fi
+      [[ "$mdr_url" == http://* || "$mdr_url" == https://* ]] || continue
       all_files+=( "${title:-$id}" )
       catalog_mdr+=( "$mdr_url" )
       catalog_pdx+=( "$pdx_url" )

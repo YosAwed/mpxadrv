@@ -36,9 +36,11 @@ def read_mdr_header(path: Path) -> tuple[str, str]:
     if zero < 0:
         raise ValueError(f"MDR PDX terminator missing: {path}")
     pdx_name = data[pdx_start:zero].decode("cp932", errors="replace")
-    # Collapse multi-line titles for catalog display.
+    # Collapse multi-line / tab-padded titles for catalog display.
+    # Embedded TABs must not appear: catalog --tsv is tab-separated.
+    title = title.replace("\r", "\n").replace("\t", " ")
     title = " / ".join(
-        line.strip() for line in title.replace("\r", "\n").split("\n") if line.strip()
+        " ".join(line.split()) for line in title.split("\n") if line.strip()
     )
     return title, pdx_name
 
