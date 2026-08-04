@@ -1,5 +1,6 @@
 #include "mdr.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -94,6 +95,22 @@ int main() {
             "converted MDX did not remove its PDX name");
     require(mpxadrv::countSeparableHardwareTracks(mdr) == 1,
             "separable hardware track was not counted");
+
+    // The same bytes parsed from memory (URL streaming path) must match the
+    // file-based loader exactly.
+    const mpxadrv::MdrFile fromMemory = mpxadrv::parseMdr(bytes);
+    require(fromMemory.title == mdr.title && fromMemory.pdxName == mdr.pdxName &&
+                fromMemory.trackOffsets == mdr.trackOffsets &&
+                fromMemory.toneOffset == mdr.toneOffset &&
+                fromMemory.activeTracks == mdr.activeTracks,
+            "in-memory MDR parsing differs from file parsing");
+    bool rejectedEmpty = false;
+    try {
+      static_cast<void>(mpxadrv::parseMdr({}));
+    } catch (const mpxadrv::MdrError&) {
+      rejectedEmpty = true;
+    }
+    require(rejectedEmpty, "empty MDR data was not rejected");
     const std::vector<std::uint8_t> hardwareMdx =
         mpxadrv::makeMdxHardwareCompatible(
             mdr, {0xff, 0xc8, 0x0f, 0xf1, 0x00});

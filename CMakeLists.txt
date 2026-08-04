@@ -56,6 +56,7 @@ add_executable(mpxadrv
   src/main.cpp
   src/mdr.cpp
   src/midi.cpp
+  src/remote.cpp
   src/software_synth.cpp
   src/tdx.cpp
 )
@@ -120,6 +121,14 @@ if(BUILD_TESTING)
   target_include_directories(midi_tests PRIVATE src)
   target_compile_options(midi_tests PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME midi_conversion COMMAND midi_tests)
+
+  add_executable(remote_tests
+    tests/remote_tests.cpp
+    src/remote.cpp
+  )
+  target_include_directories(remote_tests PRIVATE src)
+  target_compile_options(remote_tests PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME remote_url_streaming COMMAND remote_tests)
 
   add_test(
     NAME cli_smoke

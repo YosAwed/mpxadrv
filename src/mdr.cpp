@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <utility>
 
 namespace mpxadrv {
 namespace {
@@ -348,12 +349,21 @@ MdrFile loadMdr(const std::filesystem::path& path) {
     throw MdrError("MDR file not found: " + path.string());
   }
 
-  MdrFile result;
-  result.data.assign(std::istreambuf_iterator<char>(input),
-                     std::istreambuf_iterator<char>());
-  if (result.data.empty()) {
+  std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)),
+                                  std::istreambuf_iterator<char>());
+  if (bytes.empty()) {
     throw MdrError("MDR file is empty: " + path.string());
   }
+  return parseMdr(std::move(bytes));
+}
+
+MdrFile parseMdr(std::vector<std::uint8_t> data) {
+  if (data.empty()) {
+    throw MdrError("MDR data is empty");
+  }
+
+  MdrFile result;
+  result.data = std::move(data);
 
   const std::array<std::uint8_t, 3> titleEnd = {0x0d, 0x0a, 0x1a};
   const auto marker = std::search(result.data.begin(), result.data.end(),

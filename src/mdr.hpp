@@ -29,6 +29,10 @@ struct MdrFile {
 
 MdrFile loadMdr(const std::filesystem::path& path);
 
+// Parses an MDR image already held in memory, e.g. one streamed from a URL
+// instead of read from a local file.
+MdrFile parseMdr(std::vector<std::uint8_t> data);
+
 // Counts FM/PCM channels that actually emit notes before the song loop.
 // Empty hardware-channel stubs (common in MIDI-only MDR files) are ignored.
 int countSeparableHardwareTracks(const MdrFile& mdr);
