@@ -48,16 +48,13 @@ find_library(AUDIOTOOLBOX_FRAMEWORK AudioToolbox REQUIRED)
 find_library(COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
 find_library(COREMIDI_FRAMEWORK CoreMIDI REQUIRED)
-find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(ICONV_LIBRARY iconv REQUIRED)
-
-enable_language(OBJCXX)
 
 add_executable(mpxadrv
   src/catalog.cpp
   src/compat.cpp
   src/core_midi.cpp
-  src/http.mm
+  src/http.cpp
   src/main.cpp
   src/mdr.cpp
   src/midi.cpp
@@ -76,7 +73,6 @@ target_link_libraries(mpxadrv PRIVATE
   "${COREAUDIO_FRAMEWORK}"
   "${COREFOUNDATION_FRAMEWORK}"
   "${COREMIDI_FRAMEWORK}"
-  "${FOUNDATION_FRAMEWORK}"
   "${ICONV_LIBRARY}"
 )
 
@@ -117,10 +113,9 @@ if(BUILD_TESTING)
   add_executable(catalog_tests
     tests/catalog_tests.cpp
     src/catalog.cpp
-    src/http.mm
+    src/http.cpp
   )
   target_include_directories(catalog_tests PRIVATE src)
-  target_link_libraries(catalog_tests PRIVATE "${FOUNDATION_FRAMEWORK}")
   target_compile_options(catalog_tests PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME catalog_loader COMMAND catalog_tests)
 

@@ -154,7 +154,7 @@ MPXADRV_CATALOG=https://example.com/catalog.json mpxadrv-player
 
 Remote MDR bytes are held in memory during playback. Hybrid songs still write a
 short-lived temporary MDX/PDX file for mdxmini, but nothing is saved beside the
-catalog JSON in your public repository.
+catalog JSON in your public repository. HTTPS fetches use the system `curl`.
 
 To host a local `Reference/MDR` collection on Cloudflare R2 (public URL +
 generated catalog, skipping songs with missing PDX), see
