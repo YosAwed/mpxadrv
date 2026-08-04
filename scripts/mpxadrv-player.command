@@ -50,7 +50,7 @@ while (( $# > 0 )); do
   esac
 done
 
-if (( catalog_mode == 0 && -z "$catalog_source" )); then
+if (( catalog_mode == 0 )) && [[ -z "$catalog_source" ]]; then
   music_dir=${music_dir:-$PWD}
   if [[ ! -d "$music_dir" ]]; then
     print -u2 -- "フォルダーが見つかりません: $music_dir"
@@ -62,11 +62,28 @@ elif [[ -z "$catalog_source" ]]; then
   exit 1
 fi
 
+resolve_path() {
+  local value=$1
+  if [[ -z "$value" ]]; then
+    print -n -- ""
+    return
+  fi
+  if [[ "$value" == /* ]]; then
+    print -n -- "$value"
+    return
+  fi
+  if [[ -e "$repo_dir/$value" ]]; then
+    print -n -- "${repo_dir:A}/$value"
+    return
+  fi
+  print -n -- "${value:A}"
+}
+
 if [[ -n "${MPXADRV_BIN:-}" ]]; then
-  player_override=${MPXADRV_BIN:A}
+  player_override=$(resolve_path "$MPXADRV_BIN")
 fi
 if [[ -n "${MPXADRV_SOUNDFONT:-}" ]]; then
-  soundfont_override=${MPXADRV_SOUNDFONT:A}
+  soundfont_override=$(resolve_path "$MPXADRV_SOUNDFONT")
 fi
 
 if [[ -n "$player_override" ]]; then
@@ -118,10 +135,12 @@ reload_files() {
   catalog_mdr=()
   catalog_pdx=()
   if (( catalog_mode )); then
-    local line index id title mdr_url pdx_url
+    local index id title mdr_url pdx_url
     while IFS=$'\t' read -r index id title mdr_url pdx_url; do
-      [[ -z "$index" ]] && continue
-      all_files+=( "$title" )
+      # Ignore banners / blank lines; only numbered TSV rows count.
+      [[ "$index" == <-> ]] || continue
+      [[ -n "$mdr_url" ]] || continue
+      all_files+=( "${title:-$id}" )
       catalog_mdr+=( "$mdr_url" )
       catalog_pdx+=( "$pdx_url" )
     done < <("$player" catalog "$catalog_source" --tsv 2>/dev/null)

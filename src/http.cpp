@@ -50,7 +50,7 @@ std::vector<std::uint8_t> fetchUrl(
   // Objective-C runtime edge cases in this CLI.
   std::ostringstream command;
   command << "/usr/bin/curl --silent --show-error --fail --location "
-             "--max-time 120";
+             "--max-time 120 --user-agent mpxadrv/0.7";
   if (byteRange) {
     command << " --range " << byteRange->first << '-' << byteRange->second;
   }

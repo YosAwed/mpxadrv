@@ -318,6 +318,7 @@ Options parseArguments(int argc, char* argv[]) {
     std::exit(0);
   }
   if (first == "--version") {
+    printStartupBanner(std::cout);
     std::exit(0);
   }
   if (first == "play" || first == "info" || first == "render" ||
@@ -1505,12 +1506,16 @@ int processMdr(const Options& options, MdrInput input) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  printStartupBanner(std::cout);
   std::signal(SIGINT, handleSignal);
   std::signal(SIGTERM, handleSignal);
 
   try {
     const Options options = parseArguments(argc, argv);
+    const bool quietCatalog =
+        options.command == "catalog" && options.catalogTsv;
+    if (!quietCatalog) {
+      printStartupBanner(std::cout);
+    }
 
     if (options.command == "tdx") {
       const mpxadrv::TdxResult compiled =
