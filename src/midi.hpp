@@ -40,8 +40,9 @@ struct MidiSequence {
   std::vector<MidiTrack> tracks;
   std::vector<std::string> warnings;
   std::uint64_t endTick = 0;
-  // Tick where the song's L (F1) first jumped back during conversion.
-  // Used by software/CoreMIDI players to repeat from that point forever.
+  // Tick where the master song cycle resumes after the intro. Short-period
+  // tracks are expanded so the region [loopStartTick, endTick] contains a
+  // full cycle of every looping part (not just the earliest L).
   std::uint64_t loopStartTick = 0;
   bool hasSongLoop = false;
 };

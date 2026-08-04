@@ -941,17 +941,9 @@ int eventPriority(const MidiEvent& event) {
 
 }  // namespace
 
-MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
-                              const int* trackOffsets, int trackCount,
-                              int loops) {
-  if (data == nullptr || trackOffsets == nullptr || length == 0 ||
-      trackCount <= 0) {
-    throw MidiError("MDX has no track data");
-  }
-  if (loops < 1) {
-    throw MidiError("MIDI loop count must be positive");
-  }
-
+MidiSequence convertMadrvMidiWithLimits(
+    const std::uint8_t* data, std::size_t length, const int* trackOffsets,
+    int trackCount, const std::vector<int>& loopLimits) {
   MidiSequence sequence;
   sequence.tempos.push_back({0, 0xc8, 0});
   for (int track = 0; track < trackCount; ++track) {
@@ -963,7 +955,12 @@ MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
     converter.result.sourceTrack = track;
     converter.bytes.assign(data, data + length);
     converter.position = static_cast<std::size_t>(trackOffsets[track]);
-    converter.loopLimit = loops;
+    converter.loopLimit =
+        track < static_cast<int>(loopLimits.size()) ? loopLimits[static_cast<std::size_t>(track)]
+                                                    : 1;
+    if (converter.loopLimit < 1) {
+      converter.loopLimit = 1;
+    }
     converter.midi = track >= 16;
     converter.channel = track & 0x0f;
     if (converter.midi) {
@@ -983,6 +980,144 @@ MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
                      }
                      return left.order < right.order;
                    });
+  return sequence;
+}
+
+// Tracks often carry different L periods. Wrapping every track from the earliest
+// F1 leaves short-period parts silent for most of a long cycle (and desyncs the
+// hybrid FM path). Expand short tracks to cover the longest looping period and
+// wrap from that master loop point instead.
+void alignSongLoopCycle(const std::uint8_t* data, std::size_t length,
+                        const int* trackOffsets, int trackCount, int loops,
+                        MidiSequence& sequence) {
+  if (!sequence.hasSongLoop || loops < 1) {
+    return;
+  }
+
+  std::vector<int> onceLimits(static_cast<std::size_t>(trackCount), 1);
+  std::vector<int> twiceLimits(static_cast<std::size_t>(trackCount), 2);
+  const MidiSequence once =
+      convertMadrvMidiWithLimits(data, length, trackOffsets, trackCount,
+                                 onceLimits);
+  const MidiSequence twice =
+      convertMadrvMidiWithLimits(data, length, trackOffsets, trackCount,
+                                 twiceLimits);
+
+  std::vector<std::uint64_t> endOnce(static_cast<std::size_t>(trackCount), 0);
+  std::vector<std::uint64_t> period(static_cast<std::size_t>(trackCount), 0);
+  for (const MidiTrack& track : once.tracks) {
+    if (track.sourceTrack >= 0 && track.sourceTrack < trackCount) {
+      endOnce[static_cast<std::size_t>(track.sourceTrack)] = track.endTick;
+    }
+  }
+  for (const MidiTrack& track : twice.tracks) {
+    if (track.sourceTrack < 0 || track.sourceTrack >= trackCount) {
+      continue;
+    }
+    const std::size_t index = static_cast<std::size_t>(track.sourceTrack);
+    if (track.endTick > endOnce[index]) {
+      period[index] = track.endTick - endOnce[index];
+    }
+  }
+
+  std::uint64_t masterPeriod = 0;
+  for (std::uint64_t value : period) {
+    masterPeriod = std::max(masterPeriod, value);
+  }
+  if (masterPeriod == 0) {
+    return;
+  }
+
+  std::uint64_t masterLoopStart = sequence.loopStartTick;
+  bool foundMaster = false;
+  for (int track = 0; track < trackCount; ++track) {
+    const std::size_t index = static_cast<std::size_t>(track);
+    if (period[index] != masterPeriod || endOnce[index] < masterPeriod) {
+      continue;
+    }
+    const std::uint64_t candidate = endOnce[index] - masterPeriod;
+    if (!foundMaster || candidate > masterLoopStart) {
+      masterLoopStart = candidate;
+      foundMaster = true;
+    }
+  }
+  if (!foundMaster) {
+    return;
+  }
+
+  const std::uint64_t targetEnd =
+      masterLoopStart + masterPeriod * static_cast<std::uint64_t>(loops);
+  std::vector<int> limits(static_cast<std::size_t>(trackCount), loops);
+  bool needsRefill = masterLoopStart != sequence.loopStartTick;
+  for (int track = 0; track < trackCount; ++track) {
+    const std::size_t index = static_cast<std::size_t>(track);
+    if (period[index] == 0) {
+      continue;
+    }
+    // end(n) ~= end(1) + (n - 1) * period
+    int need = loops;
+    while (need < 4096) {
+      const std::uint64_t projected =
+          endOnce[index] +
+          static_cast<std::uint64_t>(need - 1) * period[index];
+      if (projected >= targetEnd) {
+        break;
+      }
+      ++need;
+    }
+    if (need != loops) {
+      needsRefill = true;
+    }
+    limits[index] = need;
+  }
+  if (!needsRefill) {
+    sequence.loopStartTick = masterLoopStart;
+    return;
+  }
+
+  sequence = convertMadrvMidiWithLimits(data, length, trackOffsets, trackCount,
+                                        limits);
+  sequence.hasSongLoop = true;
+  sequence.loopStartTick = masterLoopStart;
+  // Drop any trailing partial cycle so the player wrap length equals one
+  // master period (times the requested loop count).
+  if (sequence.endTick > targetEnd) {
+    sequence.endTick = targetEnd;
+    for (MidiTrack& track : sequence.tracks) {
+      track.events.erase(
+          std::remove_if(track.events.begin(), track.events.end(),
+                         [targetEnd](const MidiEvent& event) {
+                           return event.tick > targetEnd;
+                         }),
+          track.events.end());
+      if (track.endTick > targetEnd) {
+        track.endTick = targetEnd;
+      }
+    }
+    sequence.tempos.erase(
+        std::remove_if(sequence.tempos.begin(), sequence.tempos.end(),
+                       [targetEnd](const MidiTempo& tempo) {
+                         return tempo.tick > targetEnd;
+                       }),
+        sequence.tempos.end());
+  }
+}
+
+MidiSequence convertMadrvMidi(const std::uint8_t* data, std::size_t length,
+                              const int* trackOffsets, int trackCount,
+                              int loops) {
+  if (data == nullptr || trackOffsets == nullptr || length == 0 ||
+      trackCount <= 0) {
+    throw MidiError("MDX has no track data");
+  }
+  if (loops < 1) {
+    throw MidiError("MIDI loop count must be positive");
+  }
+
+  std::vector<int> limits(static_cast<std::size_t>(trackCount), loops);
+  MidiSequence sequence = convertMadrvMidiWithLimits(
+      data, length, trackOffsets, trackCount, limits);
+  alignSongLoopCycle(data, length, trackOffsets, trackCount, loops, sequence);
   return sequence;
 }
 
@@ -1190,6 +1325,18 @@ void playScheduledMidiEvents(
     }
   };
 
+  auto silenceForLoop = [&] {
+    // Clear stuck notes / sustain / pitch bend before restarting the cycle.
+    for (int channel = 0; channel < 16; ++channel) {
+      const std::uint8_t status =
+          static_cast<std::uint8_t>(0xb0 | channel);
+      send({status, 64, 0});
+      send({status, 123, 0});
+      send({status, 120, 0});
+      send({static_cast<std::uint8_t>(0xe0 | channel), 0x00, 0x40});
+    }
+  };
+
   while (true) {
     if (shouldStop && shouldStop()) {
       break;
@@ -1198,6 +1345,7 @@ void playScheduledMidiEvents(
       if (!canLoop) {
         break;
       }
+      silenceForLoop();
       index = loopIndex;
       firstPass = false;
       if (useAudioClock && songClock) {

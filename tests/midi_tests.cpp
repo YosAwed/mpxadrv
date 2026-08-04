@@ -58,6 +58,33 @@ int main() {
     require(loopSequence.hasSongLoop && loopSequence.loopStartTick == 4,
             "song loop start tick was not recorded");
 
+    // Two tracks with L periods 4 and 8: wrap from the longer cycle, and keep
+    // the short track expanded through that whole cycle.
+    const std::vector<std::uint8_t> multiData = {
+        // Track 0: intro note (4) + body note (8).
+        0xe0, 0x08, 0x80, 0xfb, 0x80, 0xa0, 0x03, 0xa1, 0x07, 0xf1, 0xff,
+        0xfb,
+        // Track 1: period-4 note loop.
+        0xe0, 0x08, 0x81, 0xfb, 0x80, 0xa2, 0x03, 0xf1, 0xff, 0xfb,
+        // Overrun guard if a loop offset is wrong during the test.
+        0xf1, 0x00,
+    };
+    const int multiOffsets[] = {0, 12};
+    const mpxadrv::MidiSequence multi = mpxadrv::convertMadrvMidi(
+        multiData.data(), multiData.size(), multiOffsets, 2, 1);
+    require(multi.hasSongLoop, "multi-period song loop missing");
+    require(multi.loopStartTick == 12,
+            "master loop should start at the long-period F1");
+    require(multi.endTick - multi.loopStartTick == 8,
+            "aligned cycle length should equal the long period");
+    bool shortFilled = false;
+    for (const auto& track : multi.tracks) {
+      if (track.sourceTrack == 1 && track.endTick >= multi.endTick) {
+        shortFilled = true;
+      }
+    }
+    require(shortFilled, "short-period track was not expanded to master cycle");
+
     const auto& events = sequence.tracks[0].events;
     require(events.size() == 17, "MIDI event count is wrong");
     const auto bendRangeLsb = std::find_if(
