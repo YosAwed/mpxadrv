@@ -156,6 +156,10 @@ Remote MDR bytes are held in memory during playback. Hybrid songs still write a
 short-lived temporary MDX/PDX file for mdxmini, but nothing is saved beside the
 catalog JSON in your public repository.
 
+To host a local `Reference/MDR` collection on Cloudflare R2 (public URL +
+generated catalog, skipping songs with missing PDX), see
+[docs/r2-setup.md](docs/r2-setup.md).
+
 ## Usage
 
 Play an MDX file:
