@@ -80,3 +80,15 @@ with wave.open(sys.argv[1]) as w:
 print("wav ok", w.getnframes(), "frames")
 PY
 pass "hybrid MDR render writes stereo WAV"
+
+catalog="$root/examples/catalog.example.json"
+if [[ ! -f "$catalog" ]]; then
+  fail "example catalog missing at $catalog"
+fi
+"$player" catalog "$catalog" --tsv >"$tmpdir/catalog.tsv"
+[[ -s "$tmpdir/catalog.tsv" ]] || fail "catalog --tsv produced no output"
+grep -q $'Demo Song' "$tmpdir/catalog.tsv" \
+  || fail "catalog TSV output missing demo title"
+grep -q 'demo.mdr' "$tmpdir/catalog.tsv" \
+  || fail "catalog TSV output missing demo mdr URL"
+pass "catalog lists remote songs from JSON"

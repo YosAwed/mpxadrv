@@ -28,6 +28,10 @@ struct MdrFile {
 };
 
 MdrFile loadMdr(const std::filesystem::path& path);
+MdrFile parseMdrBytes(std::vector<std::uint8_t> data);
+
+// Returns the Shift-JIS title when the MDR header prefix is present.
+std::string peekMdrTitle(const std::vector<std::uint8_t>& data);
 
 // Counts FM/PCM channels that actually emit notes before the song loop.
 // Empty hardware-channel stubs (common in MIDI-only MDR files) are ignored.
