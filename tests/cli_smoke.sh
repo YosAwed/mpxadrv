@@ -63,6 +63,39 @@ grep -qi 'soundfont' "$tmpdir/err.txt" \
   || fail "missing soundfont requirement message"
 pass "hybrid render requires --soundfont"
 
+# URL streaming: the player fetches the song over HTTP and never saves it.
+port="$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)"
+python3 -m http.server "$port" --bind 127.0.0.1 --directory "$tmpdir" \
+    >"$tmpdir/http.log" 2>&1 &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true; rm -rf "$tmpdir"' EXIT
+ready=0
+for _ in $(seq 1 50); do
+  if curl -fs "http://127.0.0.1:$port/hybrid.mdr" -o /dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 0.1
+done
+[[ "$ready" == "1" ]] || fail "local HTTP server did not start"
+"$player" info "http://127.0.0.1:$port/hybrid.mdr" >"$tmpdir/info.txt"
+grep -q 'MADRV MDR' "$tmpdir/info.txt" \
+  || fail "URL info did not parse the streamed MDR"
+"$player" midi "http://127.0.0.1:$port/hybrid.mdr" \
+    -o "$tmpdir/stream.mid" >/dev/null
+[[ -s "$tmpdir/stream.mid" ]] || fail "URL MIDI export missing or empty"
+[[ ! -e "hybrid.mdr" ]] || fail "URL playback saved the song locally"
+kill "$server_pid" 2>/dev/null || true
+trap 'rm -rf "$tmpdir"' EXIT
+pass "MDR streams from an HTTP URL without a local copy"
+
 if [[ ! -f "$soundfont" ]]; then
   echo "SKIP: hybrid WAV render (SoundFont not found at $soundfont)"
   exit 0
